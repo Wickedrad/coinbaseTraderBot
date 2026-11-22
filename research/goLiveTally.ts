@@ -25,7 +25,7 @@ import { hashStr, normals } from './history/historyReplay';
 import { repriceRow, rowWeights } from './trainMetaModel';
 import { readJson } from '../bot/util/persist';
 import { recordingLines } from '../bot/marketdata/recordingFiles';
-import { DepthSim, readDepthModel, type DepthModel } from './history/depthSim';
+import { DepthSim, readDepthModel, type DepthModel, type DepthSimParams } from './history/depthSim';
 import { bootstrapMeanCi, deflatedSharpe, dieboldMariano } from './stats';
 
 /** Results older than this before the newest are dropped: a year of windows is about 3 MB. */
@@ -204,8 +204,8 @@ export function quoteFiller(fill: QuoteFill): (e: Ev) => Ev | undefined {
 export const depthSims: DepthSim[] = [];
 
 /** A whole day through quoteFiller. */
-export function fillQuotes(events: Ev[], fill: QuoteFill, depth?: DepthModel): Ev[] {
-  const f = streamFiller(fill, depth);
+export function fillQuotes(events: Ev[], fill: QuoteFill, depth?: DepthModel, params?: Partial<DepthSimParams>): Ev[] {
+  const f = streamFiller(fill, depth, params);
   return [...events.flatMap((e) => f.push(e)), ...f.end()];
 }
 
@@ -219,15 +219,16 @@ const LOOKAHEAD_MS = 20_000;
 /** quoteFiller as a stream that can add records: `depth` plays the simulated book around each quote, its changes and
  *  trades merged into the day in time order (a record is never written before one already written). Each quote is
  *  played once the contract's next quote is in (or LOOKAHEAD_MS has passed), from it to the next, with the trade flow
- *  set by where the mid goes (research/history/depthSim.ts); so the stream comes out LOOKAHEAD_MS behind. */
-export function streamFiller(fill: QuoteFill, depth?: DepthModel): { push: (e: Ev) => Ev[]; end: () => Ev[] } {
+ *  set by where the mid goes (research/history/depthSim.ts); so the stream comes out LOOKAHEAD_MS behind. `params`: the depth
+ *  simulator's tuning constants (over the defaults and over the model's own `params` block; research/history/depthSim.ts). */
+export function streamFiller(fill: QuoteFill, depth?: DepthModel, params?: Partial<DepthSimParams>): { push: (e: Ev) => Ev[]; end: () => Ev[] } {
   if (fill.how !== 'depth') {
     const f = quoteFiller(fill);
     return { push: (e) => { const x = f(e); return x ? [x] : []; }, end: () => [] };
   }
   if (!depth) throw new Error('the depth fill-in needs a depth model (models/depth_model.json)');
   const anchors = quoteFiller({ how: 'requote' });
-  const sim = new DepthSim(depth);
+  const sim = new DepthSim(depth, params);
   depthSims.push(sim);
   const close = new Map<string, number>();
   // The quote each contract's book is waiting to be played from, until its next quote is in.
@@ -297,8 +298,8 @@ export function streamFiller(fill: QuoteFill, depth?: DepthModel): { push: (e: E
 
 /** One day's file through quoteFiller, a line at a time (a whole recorded day is longer than the longest string V8
  *  allows, so it is never read into one). */
-export async function fillDayFile(src: string, dst: string, fill: QuoteFill, depth?: DepthModel): Promise<void> {
-  const f = streamFiller(fill, depth);
+export async function fillDayFile(src: string, dst: string, fill: QuoteFill, depth?: DepthModel, params?: Partial<DepthSimParams>): Promise<void> {
+  const f = streamFiller(fill, depth, params);
   const gz = zlib.createGzip({ level: 1 });
   const done = new Promise<void>((resolve, reject) => {
     const out = fs.createWriteStream(dst);

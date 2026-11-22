@@ -43,7 +43,10 @@ export interface FlowCell { offset: number; qi: number; seconds: number; addPerS
 /** research/depthStudy.ts's --out: the depth model. */
 export interface DepthModel { days: string[]; shape: ShapeCell[]; flow: FlowCell[];
   /** research/depthStudy.ts informed flow: the share of trades that took the side the mid went over the next minute. */
-  informed?: { n: number; agree: number } }
+  informed?: { n: number; agree: number };
+  /** Optional: depth simulator parameters this model should be played with (override the defaults; the caller's own win over
+   *  these). Absent in every model research/depthStudy.ts writes; a sweep's best candidate can be put here. */
+  params?: Partial<DepthSimParams> }
 
 export function readDepthModel(file: string): DepthModel | undefined {
   try {
@@ -58,11 +61,11 @@ function rng(seed: number): () => number {
   return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 const normal = (u: () => number) => Math.sqrt(-2 * Math.log(Math.max(u(), 1e-12))) * Math.cos(2 * Math.PI * u());
-/** A log-normal draw with this median and 90th percentile, at least 1 contract. */
-function lognormal(u: () => number, p50: number, p90: number): number {
+/** A log-normal draw with this median and 90th percentile, at least 1 contract; `mult` scales it (1: as measured). */
+function lognormal(u: () => number, p50: number, p90: number, mult = 1): number {
   if (!(p50 > 0)) return 1;
   const s = p90 > p50 ? Math.log(p90 / p50) / 1.2816 : 0;
-  return Math.max(1, Math.round(p50 * Math.exp(s * normal(u))));
+  return Math.max(1, Math.round(p50 * mult * Math.exp(s * normal(u))));
 }
 /** A seeded Poisson count: by multiplying uniforms when small, else its normal approximation. */
 function poisson(u: () => number, lambda: number): number {
@@ -89,24 +92,96 @@ interface SimBook { bid: Map<number, number>; ask: Map<number, number> } // pric
 
 export type DepthEv = { t: number; k: string; ticker: string; [key: string]: unknown };
 
-/** How fast a level's size goes back to its drawn size (seconds). */
-const REVERT_S = 10;
-/** The best level's, faster: its makers put back what trades take (Nov 4 twin: refilled at the others' pace, trades kept
- *  the best level thin or empty, and the mid stopped following the index, 0.19 against 0.77 real). */
-const REVERT_TOP_S = 1;
-/** A level's own second-to-second wander (sd as a share of its size). */
-const STEP_SD = 0.1;
-/** The fill-in's own best-price changes a second before flicker (Nov 4 twin: ~120 a minute once trades and sizes were
- *  right; with 0.9 the best price changed ~455 times a minute against the real ~350). */
-const FLICK_BASE_PER_SEC = 2.6;
-/** Most trade-sized prints a sweep of one level makes before the rest of it is cancelled. */
-const SWEEP_PRINTS = 3;
-/** Whether the trade flow may depend on the next quote (off: that is the future). */
+/** Whether the trade flow may depend on the next quote (off: that is the future). Never a tuning parameter: it stays out of
+ *  DepthSimParams and out of DEPTH_PARAM_SPACE, so no optimizer can switch the look-ahead on. */
 const USE_NEXT_MOVE = false;
-/** How far a level's size moves within one contract (log sd), the rest of the measured spread being between contracts. */
-const WITHIN_SD = 0.7;
-/** How much one contract's trade rate differs from another's (log sd; its mean stays the measured rate). */
-const ACTIVITY_SD = 0.6;
+
+// ---------------------------------------------------------------------------------------------------------------
+// The tuning constants (Nov 22: they were hand constants, tuned by hand per verdict, one 4-hour run at a time). They are one
+// object now, so a machine optimizer can set them (research/historyTwin.ts --stage sweep). DEFAULT_DEPTH_SIM_PARAMS holds
+// TODAY'S values, and the fill-in with them is bit-identical to the version before the object existed (tests/depthSimWalk.test.ts
+// holds the golden hash of a fixed synthetic day, computed from the commit before). No parameter can introduce look-ahead or
+// a clock: every draw stays seeded by the contract and the quote's time.
+
+/** The depth fill-in's dynamic constants. Seconds, milliseconds and rates as named; `*Sd` are standard deviations. */
+export interface DepthSimParams {
+  /** How fast a level's size goes back to its drawn size (seconds; was REVERT_S). */
+  revertS: number;
+  /** The best level's, faster: its makers put back what trades take (Nov 4 twin: refilled at the others' pace, trades kept
+   *  the best level thin or empty, and the mid stopped following the index, 0.19 against 0.77 real; was REVERT_TOP_S). */
+  revertTopS: number;
+  /** A level's own second-to-second wander (sd as a share of its size; was STEP_SD). */
+  stepSd: number;
+  /** The fill-in's own best-price changes a second before flicker (Nov 4 twin: ~120 a minute once trades and sizes were
+   *  right; with 0.9 the best price changed ~455 times a minute against the real ~350; was FLICK_BASE_PER_SEC). */
+  flickBasePerSec: number;
+  /** Most trade-sized prints a sweep of one level makes before the rest of it is cancelled (an integer; was SWEEP_PRINTS). */
+  sweepPrints: number;
+  /** How far a level's size moves within one contract (log sd), the rest of the measured spread being between contracts
+   *  (was WITHIN_SD). */
+  withinSd: number;
+  /** How much one contract's trade rate differs from another's (log sd; its mean stays the measured rate; was ACTIVITY_SD). */
+  activitySd: number;
+  /** A level's size never goes above this many times its measured 90th percentile (was the literal 4 in the net change). */
+  capMult: number;
+  /** A flickered best level comes back after at least this many ms (was the literal 20) and ... */
+  flickBackMinMs: number;
+  /** ... within this many more ms, uniformly (was the literal 180). */
+  flickBackSpanMs: number;
+  /** NEW knob, neutral at 1: a factor on the measured trade rate (every contract, every cell). */
+  tradeRateMult: number;
+  /** NEW knob, neutral at 1: a factor on the measured trade sizes (median and 90th percentile alike). */
+  tradeSizeMult: number;
+  /** NEW knob, neutral at 1: a factor on every drawn level size (and on the cap above, so the shape scales as a whole). */
+  levelSizeMult: number;
+}
+
+/** TODAY'S values (the constants the fill-in has been run with since the Nov 4 twin). */
+export const DEFAULT_DEPTH_SIM_PARAMS: Readonly<DepthSimParams> = Object.freeze({
+  revertS: 10, revertTopS: 1, stepSd: 0.1, flickBasePerSec: 2.6, sweepPrints: 3, withinSd: 0.7, activitySd: 0.6,
+  capMult: 4, flickBackMinMs: 20, flickBackSpanMs: 180, tradeRateMult: 1, tradeSizeMult: 1, levelSizeMult: 1,
+});
+export const DEPTH_PARAM_NAMES = Object.keys(DEFAULT_DEPTH_SIM_PARAMS) as Array<keyof DepthSimParams>;
+
+/** What an optimizer may search: bounds, the scale to search them on, and why those bounds. `int`: rounded after sampling. The
+ *  defaults sit inside every range (a test holds it). Left OUT of the space on purpose, and why: USE_NEXT_MOVE and
+ *  MOVE_MIN_SEGS (look-ahead: never tunable), DEPTH_LEVELS, the TAU/MID/Q bucket edges and ANCHOR_MS / LOOKAHEAD_MS (structure
+ *  shared with research/depthStudy.ts and the replay), the 1.2816 normal quantile, the Poisson switch at 30, the flicker guards
+ *  (room > 40, room - 30), the /2 (a flicker is two best-price changes) and the seed salts. */
+export interface ParamBound { lo: number; hi: number; scale: 'log' | 'linear'; note: string; int?: boolean }
+export const DEPTH_PARAM_SPACE: Readonly<Record<keyof DepthSimParams, ParamBound>> = Object.freeze({
+  revertS: { lo: 2, hi: 60, scale: 'log', note: 'seconds for a level to go back to its drawn size; default 10' },
+  revertTopS: { lo: 0.25, hi: 10, scale: 'log', note: 'seconds for the best level to be put back by its makers; default 1' },
+  stepSd: { lo: 0.02, hi: 0.4, scale: 'log', note: 'a level wanders by this share of its size a second; default 0.1' },
+  flickBasePerSec: { lo: 0.5, hi: 6, scale: 'linear', note: 'best-price changes a second the fill-in makes before flicker; the real books change ~5 a second; default 2.6' },
+  sweepPrints: { lo: 1, hi: 6, scale: 'linear', int: true, note: 'trade-sized prints a sweep of one level makes; default 3' },
+  withinSd: { lo: 0.2, hi: 1.5, scale: 'linear', note: 'log sd of a level size within one contract; default 0.7' },
+  activitySd: { lo: 0.1, hi: 1.4, scale: 'linear', note: 'log sd of a contract trade rate around the measured one; default 0.6' },
+  capMult: { lo: 1.5, hi: 10, scale: 'log', note: 'a level never exceeds this many times its measured 90th percentile; default 4' },
+  flickBackMinMs: { lo: 5, hi: 100, scale: 'log', note: 'ms before a flickered best level is back; default 20' },
+  flickBackSpanMs: { lo: 40, hi: 600, scale: 'log', note: 'ms more, uniformly, before it is back; default 180' },
+  tradeRateMult: { lo: 0.4, hi: 2.5, scale: 'log', note: 'factor on the measured trade rate (new knob, 1 = measured); default 1' },
+  tradeSizeMult: { lo: 0.4, hi: 2.5, scale: 'log', note: 'factor on the measured trade sizes (new knob); default 1' },
+  levelSizeMult: { lo: 0.3, hi: 3, scale: 'log', note: 'factor on every drawn level size and the cap (new knob); default 1' },
+});
+
+/** The parameters in force: the defaults, then each layer in order (a model's own `params` block, then the caller's), each key
+ *  checked. Throws on an unknown name, a non-finite or negative number, or a zero where a time or a factor divides. */
+export function resolveDepthSimParams(...layers: Array<Partial<DepthSimParams> | undefined>): DepthSimParams {
+  const out: DepthSimParams = { ...DEFAULT_DEPTH_SIM_PARAMS };
+  for (const layer of layers) {
+    if (!layer) continue;
+    for (const [k, v] of Object.entries(layer)) {
+      if (!(k in DEFAULT_DEPTH_SIM_PARAMS)) throw new Error(`unknown depth simulator parameter "${k}" (known: ${DEPTH_PARAM_NAMES.join(', ')})`);
+      if (v === undefined) continue;
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Error(`depth simulator parameter ${k} must be a finite number of at least 0, got ${String(v)}`);
+      out[k as keyof DepthSimParams] = v;
+    }
+  }
+  out.sweepPrints = Math.round(out.sweepPrints);
+  for (const k of ['revertS', 'revertTopS', 'capMult', 'tradeRateMult', 'tradeSizeMult', 'levelSizeMult'] as const) if (!(out[k] > 0)) throw new Error(`depth simulator parameter ${k} must be above 0, got ${out[k]}`);
+  return out;
+}
 
 export class DepthSim {
   /** What the fill-in emitted (a run's diagnostics): seconds simulated, trades (sweep prints among them), flickers. */
@@ -114,10 +189,13 @@ export class DepthSim {
   private readonly shape = new Map<string, ShapeCell>();
   private readonly flow = new Map<string, FlowCell>();
   private readonly books = new Map<string, SimBook>();
+  /** The parameters in force: the defaults, the model's own `params` block, then `params` (each over the one before). */
+  readonly params: DepthSimParams;
 
-  constructor(private readonly model: DepthModel) {
+  constructor(private readonly model: DepthModel, params?: Partial<DepthSimParams>) {
     for (const c of model.shape) this.shape.set(`${c.ti}|${c.mi}`, c);
     for (const f of model.flow) this.flow.set(`${f.offset}|${f.qi}`, f);
+    this.params = resolveDepthSimParams(model.params, params);
   }
 
   /** The shape cell for a contract's state: its own bucket when measured, else the nearest mid at the same minutes to
@@ -142,7 +220,7 @@ export class DepthSim {
 
   /** Each contract's own depth (Nov 4 twin): the measured sizes' spread (90th percentile ~20x the median) is mostly
    *  between contracts and hours, not second to second. Drawn iid each time, every contract's mean size came out ~15x the
-   *  median and its top ~40x the real one; so a contract keeps one draw of that spread, and moves within WITHIN_SD. */
+   *  median and its top ~40x the real one; so a contract keeps one draw of that spread, and moves within withinSd. */
   private readonly scale = new Map<string, number>();
   /** A contract's own standard normal draw for one purpose (seeded by its ticker, the same wherever it is replayed). */
   private contractZ(ticker: string, salt: number): number {
@@ -153,9 +231,9 @@ export class DepthSim {
   }
   private size(u: () => number, ticker: string, p50: number | null | undefined, p90: number | null | undefined): number {
     if (!(p50 && p50 > 0)) return 1;
-    const sg = p90 && p90 > p50 ? Math.log(p90 / p50) / 1.2816 : 0, sw = Math.min(sg, WITHIN_SD), sc = Math.sqrt(Math.max(0, sg * sg - sw * sw));
+    const sg = p90 && p90 > p50 ? Math.log(p90 / p50) / 1.2816 : 0, sw = Math.min(sg, this.params.withinSd), sc = Math.sqrt(Math.max(0, sg * sg - sw * sw));
     const z = this.contractZ(ticker, 0x5bd1e995);
-    return Math.max(1, Math.round(p50 * Math.exp(sc * z + sw * normal(u))));
+    return Math.max(1, Math.round(p50 * this.params.levelSizeMult * Math.exp(sc * z + sw * normal(u))));
   }
 
   /** The book at an anchor quote (bid and ask in dollars) and its life until `until`: a full snapshot at `t`, then
@@ -164,6 +242,7 @@ export class DepthSim {
   play(ticker: string, t: number, bid: number, ask: number, until: number, close: number, nextMid?: number): DepthEv[] {
     const bB = Math.round(bid * PX), bA = Math.round(ask * PX);
     if (!(bB >= 1 && bA <= PX - 1 && bA > bB)) return [];
+    const P = this.params;
     const u = rng(hashStr(ticker) ^ Math.floor(t / 1000));
     const cell = this.cell((close - t) / MIN, (bB + bA) / 20);
     let b = this.books.get(ticker);
@@ -179,8 +258,8 @@ export class DepthSim {
       const gone = [...m.keys()].filter((p) => (side === 'bid' ? p > bB : p < bA)).sort((x, y) => (side === 'bid' ? y - x : x - y));
       for (const p of gone) {
         let q = m.get(p)!, k = 0;
-        while (q > 0 && k < SWEEP_PRINTS) {
-          const n = Math.min(q, lognormal(u, cell.tradeSize.p50, cell.tradeSize.p90));
+        while (q > 0 && k < P.sweepPrints) {
+          const n = Math.min(q, lognormal(u, cell.tradeSize.p50, cell.tradeSize.p90, P.tradeSizeMult));
           pre.push({ t, k: 'trade', ticker, price: p / PX, count: n, takerSide: yes ? 'yes' : 'no', ts: t, sim: 1 });
           pre.push({ t, k: 'delta', ticker, side, price: p / PX, delta: -n, ts: t, sim: 1 });
           q -= n; k++;
@@ -212,8 +291,8 @@ export class DepthSim {
     const byMove = mv && mv.segs >= MOVE_MIN_SEGS ? mv : undefined;
     // Each contract its own activity (Nov 4 twin: the same mean trade rate as the real books, ~650 a minute, but the real
     // contracts spread far wider, AUC 0.78 on trades a minute alone).
-    const actScale = Math.exp(ACTIVITY_SD * this.contractZ(ticker, 0x2545f491) - ACTIVITY_SD * ACTIVITY_SD / 2);
-    const tradeRate = actScale * (byMove ? Math.max(0, byMove.tradesPerSec) : Math.max(0, cell.tradesPerMin?.mean ?? 0) / 60);
+    const actScale = Math.exp(P.activitySd * this.contractZ(ticker, 0x2545f491) - P.activitySd * P.activitySd / 2);
+    const tradeRate = actScale * (byMove ? Math.max(0, byMove.tradesPerSec) : Math.max(0, cell.tradesPerMin?.mean ?? 0) / 60) * P.tradeRateMult;
     const yesShare = (byMove ? byMove.takerYesShare : undefined) ?? cell.takerYesShare ?? 0.5;
     const best = (side: Side) => { const m = b![side]; let top = side === 'bid' ? -Infinity : Infinity; for (const p of m.keys()) if (side === 'bid' ? p > top : p < top) top = p; return top; };
     // No walk toward the next quote any more (see the move to this quote, above).
@@ -226,21 +305,21 @@ export class DepthSim {
     const inf = this.model.informed, informedP = USE_NEXT_MOVE && inf && inf.n >= 1000 ? Math.min(1, Math.max(0, 2 * (inf.agree - 0.5))) : 0;
     const dir = nextMid !== undefined && Number.isFinite(nextMid) ? Math.sign(Math.round(nextMid * PX) - (bB + bA) / 2) : 0;
     // Each level's size for this quarter-minute, drawn from the measured shape (quoted or not, its size): the adds and
-    // cancels pull a queue around it, and it pulls back (REVERT_S). Without the pull the netted flow drifted up to the
+    // cancels pull a queue around it, and it pulls back (revertS). Without the pull the netted flow drifted up to the
     // cap (Nov 2 twin, run 41496163760: the top ~25x the real one's, so a sweep traded thousands at once).
     const target: Record<Side, number[]> = { bid: [], ask: [] };
     for (const side of ['bid', 'ask'] as Side[]) for (let off = 0; off < DEPTH_LEVELS; off++) {
       const p50 = cell.levelFilledP50[off], p90 = cell.levelFilledP90[off];
       target[side][off] = p50 && (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) ? this.size(u, ticker, p50, p90) : 0;
     }
-    const pull = 1 - Math.exp(-1 / REVERT_S), pullTop = 1 - Math.exp(-1 / REVERT_TOP_S);
+    const pull = 1 - Math.exp(-1 / P.revertS), pullTop = 1 - Math.exp(-1 / P.revertTopS);
     // Flicker (Nov 2 twin: the real best price changes ~324 times a minute, the fill-in's 55): a best level pulled and put
     // back within the second, as the real books' makers do; a trade in that moment takes the next level.
     const realTops = cell.topChangesPerMin?.mean;
-    const flickPerSec = realTops !== undefined && Number.isFinite(realTops) ? Math.max(0, realTops / 60 - FLICK_BASE_PER_SEC) / 2 : 0;
+    const flickPerSec = realTops !== undefined && Number.isFinite(realTops) ? Math.max(0, realTops / 60 - P.flickBasePerSec) / 2 : 0;
     // Trades a sweep printed come out of the interval's measured count (the real count includes them).
     let owe = prePrints;
-    const tradeSz = () => lognormal(u, cell.tradeSize.p50, cell.tradeSize.p90);
+    const tradeSz = () => lognormal(u, cell.tradeSize.p50, cell.tradeSize.p90, P.tradeSizeMult);
     for (let sec = t; sec < until; sec += 1000) {
       const end = Math.min(sec + 1000, until);
       this.stats.seconds += (end - sec) / 1000;
@@ -250,7 +329,7 @@ export class DepthSim {
         if (!Number.isFinite(top)) continue;
         let q = m.get(top)!, k = 0;
         const yes = side === 'ask';
-        while (q > 0 && k < SWEEP_PRINTS) {
+        while (q > 0 && k < P.sweepPrints) {
           const n = Math.min(q, tradeSz());
           out.push({ t: at, k: 'trade', ticker, price: top / PX, count: n, takerSide: yes ? 'yes' : 'no', ts: at, sim: 1 });
           out.push({ t: at, k: 'delta', ticker, side, price: top / PX, delta: -n, ts: at, sim: 1 });
@@ -274,7 +353,7 @@ export class DepthSim {
       type Step = { at: number; kind: 'trade' } | { at: number; kind: 'pull'; side: Side; back: number } | { at: number; kind: 'back'; side: Side; price: number; size: number };
       const steps: Step[] = [];
       for (let i = 0; i < nTr; i++) steps.push({ at: sec + Math.floor(((i + 1) * room) / (nTr + 1)), kind: 'trade' });
-      if (room > 40) { const nF = poisson(u, flickPerSec * ((end - sec) / 1000)); for (let i = 0; i < nF; i++) { const at = sec + Math.floor(u() * (room - 30)); steps.push({ at, kind: 'pull', side: u() < 0.5 ? 'bid' : 'ask', back: Math.min(end - 2, at + 20 + Math.floor(u() * 180)) }); } }
+      if (room > 40) { const nF = poisson(u, flickPerSec * ((end - sec) / 1000)); for (let i = 0; i < nF; i++) { const at = sec + Math.floor(u() * (room - 30)); steps.push({ at, kind: 'pull', side: u() < 0.5 ? 'bid' : 'ask', back: Math.min(end - 2, at + P.flickBackMinMs + Math.floor(u() * P.flickBackSpanMs)) }); } }
       steps.sort((x, y) => x.at - y.at);
       for (let i = 0; i < steps.length; i++) {
         const st = steps[i], at = st.at;
@@ -314,12 +393,12 @@ export class DepthSim {
           const p = side === 'bid' ? top - off * tick : top + off * tick;
           if (p < 1 || p > PX - 1) continue;
           const q = m.get(p) ?? 0;
-          // Each level wanders about this quarter-minute's drawn size and goes back to it (REVERT_S): the measured
+          // Each level wanders about this quarter-minute's drawn size and goes back to it (revertS): the measured
           // per-second adds and cancels, netted, made a random walk of thousands a second that sat at the cap (Nov 4 twin).
-          let next = q + (off === 0 ? pullTop : pull) * frac * (target[side][off] - q) + q * STEP_SD * Math.sqrt(frac) * normal(u);
+          let next = q + (off === 0 ? pullTop : pull) * frac * (target[side][off] - q) + q * P.stepSd * Math.sqrt(frac) * normal(u);
           // The quote's own level, emptied by trades or cancels, is quoted again as often as the real books quote it.
           if (off === 0 && q === 0 && u() < (cell.levelQuoted[0] ?? 1)) next = this.size(u, ticker, cell.levelFilledP50[0], cell.levelFilledP90[0]);
-          const cap = 4 * Math.max(1, cell.levelFilledP90[off] ?? cell.levelFilledP90[cell.levelFilledP90.length - 1] ?? 1);
+          const cap = P.capMult * P.levelSizeMult * Math.max(1, cell.levelFilledP90[off] ?? cell.levelFilledP90[cell.levelFilledP90.length - 1] ?? 1);
           next = Math.max(0, Math.min(cap, Math.round(next)));
           const d = next - q;
           if (d === 0) continue;

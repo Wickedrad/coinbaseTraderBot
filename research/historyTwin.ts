@@ -61,6 +61,19 @@
 //   ... --stage features --dirs real=data/twin/real,requote=data/twin/requote,depth=data/twin/depth --days C,D --out data/twin
 //   ... --stage backtest --dir data/twin/real --name real [--latency-ms 250] --days ... --out data/twin
 //   ... --stage verdict --out data/twin [--confirm-look 2 --confirm-look-note "text"]   (reads features-*.json, windows-*.json, split.json; the note is required on the confirm days)
+//   ... --stage sweep --fit-days A,B,C --twin-requote data/replay-src --real data/twin-real15m --depth-model data/models/depth_model.json --gen 0 --shard 0/7 --candidates 10 [--parents elite.json] --out data/sweep
+//   ... --stage sweep-collect --dir DIR --gen 0 --shards 7 --candidates 10 --out OUT [--partial]   (merges the shards: best.json, elite.json, results.json)
+//   ... --stage fill ... [--depth-params best.json]   (a sweep's best candidate: the fill-in then logs every parameter it used)
+//
+// THE SWEEP (Nov 22). The depth simulator's dynamic constants (research/history/depthSim.ts DepthSimParams) are set by a machine
+// optimizer instead of by hand: each candidate is the fill-in with one set of parameters, judged by the SAME judge on the FIT days
+// only (the real FIT rows from the cached restricted real days, the twin FIT rows built in-stream: the fill-in's records go straight
+// into the features code, no filled day is written). Loss = the leave-one-day-out adversary AUC over all 13 features (lower is
+// better); each feature's own AUC and each regime's AUC come with it. Generation 0 is the defaults plus a Latin hypercube of
+// DEPTH_PARAM_SPACE, later generations a cross-entropy step around the best 20 percent of the parents (research/history/
+// depthParamSearch.ts; seeded, no clock). The sweep reads FIT days only (resolveSweepFit refuses anything but the dev split's FIT
+// days, a DEV day or a CONFIRM day); the DEV verdict of the best candidate is read by a normal split=dev dispatch with
+// depth_params_run, and the winning numbers become the new defaults only through a reviewed code change.
 //
 // Prints counts, cents, $ and AUCs only (the repository is public).
 
@@ -72,6 +85,11 @@ import { OrderBook } from '../bot/marketdata/orderBook';
 import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles';
 import { gbdtLogit } from '../bot/model/trees';
 import { trainGbdt } from './gbdt';
+import { readDepthModel, resolveDepthSimParams, type DepthModel, type DepthSimParams } from './history/depthSim';
+import {
+  describeParams, eliteOf, ELITE_FRACTION, generationCandidates, mergeShards, parentsFrom, parseShard, rankResults, shardRange, SWEEP_VERSION, type SweepResult, type SweepShardFile,
+} from './history/depthParamSearch';
+import type { Ev } from './goLiveTally';
 
 const MIN = 60_000, SLOT = 15_000;
 const logit = (p: number) => { const q = Math.min(0.995, Math.max(0.005, p)); return Math.log(q / (1 - q)); };
@@ -553,7 +571,12 @@ interface Life { ticker: string; asset: string; open: number; close: number; boo
 /** Diagnostics (not features): the 15 s mid moves against the index moves, by price band and minute mark, per source. */
 export const followDiag: Record<string, Record<string, { m: number[]; x: number[] }>> = {};
 
-export async function dayRows(file: string, day: string, src: string, results: ReadonlyMap<string, string>, keep?: ReadonlySet<string>): Promise<Row[]> {
+/** One day's contract lives, built a record at a time (`push`), rows on `finish`. The file route (dayRows) and the in-stream route
+ *  (filledDayRows: the fill-in's records straight in, no file) both go through it, so they cannot drift apart. `keep`: only these
+ *  tickers. `diag` false: the follow diagnostics (global, printed by the features stage) are not fed: a sweep builds thousands of days. */
+export interface RowBuilder { push: (e: Record<string, any>) => void; finish: () => Row[] }
+
+export function rowBuilder(day: string, src: string, results: ReadonlyMap<string, string>, keep?: ReadonlySet<string>, diag = true): RowBuilder {
   const lives = new Map<string, Life>(), ix = new Map<string, number>();
   const d0 = Date.parse(`${day}T00:00:00Z`), d1 = d0 + 86_400_000;
   let slot = -1;
@@ -569,7 +592,7 @@ export async function dayRows(file: string, day: string, src: string, results: R
   };
   const reach = (t: number) => { const s = Math.floor(t / SLOT); if (slot < 0) slot = s; for (; slot < s; slot++) sample((slot + 1) * SLOT); };
   const touch = (l: Life) => { const b = l.book.bestBid(), a = l.book.bestAsk(); const k = `${b?.price}|${a?.price}`; if (k !== l.lastTop) { l.changes++; l.lastTop = k; } };
-  for await (const e of events(file)) {
+  const push = (e: Record<string, any>): void => {
     reach(e.t);
     if (e.k === 'market' && e.ticker && is15m(e.series, e.ticker) && (!keep || keep.has(e.ticker))) {
       if (!lives.has(e.ticker)) lives.set(e.ticker, { ticker: e.ticker, asset: e.asset, open: e.openTime, close: e.closeTime, book: new OrderBook(e.ticker), changes: 0, lastTop: '', slots: [], trades: 0, size: 0 });
@@ -577,38 +600,47 @@ export async function dayRows(file: string, day: string, src: string, results: R
     else if (e.k === 'delta' && lives.has(e.ticker)) { const l = lives.get(e.ticker)!; l.book.applyDelta(e.side, e.price, e.delta, e.t); touch(l); }
     else if (e.k === 'trade' && lives.has(e.ticker)) { const l = lives.get(e.ticker)!; l.trades++; l.size += e.count ?? 0; }
     else if (e.k === 'index' && e.asset && e.value > 0) ix.set(e.asset, e.value);
-  }
-  const rows: Row[] = [];
-  for (const l of lives.values()) {
-    // Only contracts that close on this day and lived through it (the day before warms the books).
-    if (l.close <= d0 || l.close > d1 || l.open < d0) continue;
-    const q = l.slots.filter((s) => s.mid !== undefined);
-    if (q.length < 20) continue;
-    const mins = (l.close - l.open) / MIN;
-    const dm: number[] = [], di: number[] = [], dmNext: number[] = [];
-    let jumpAtMin = 0, jumpAll = 0;
-    for (let i = 1; i < l.slots.length; i++) {
-      const a = l.slots[i - 1], b = l.slots[i];
-      if (a.mid === undefined || b.mid === undefined || !a.ix || !b.ix) continue;
-      const m = logit(b.mid) - logit(a.mid), x = Math.log(b.ix / a.ix) * 1e4;
-      dm.push(m); di.push(x);
-      { const g = (followDiag[src] ??= {}); const k = `${a.mid < 0.1 || a.mid > 0.9 ? 'tails' : 'middle'}${b.t % MIN === 0 ? ' at minute' : ''}`; (g[k] ??= { m: [], x: [] }).m.push(m); g[k].x.push(x); }
-      const c = l.slots[i + 1];
-      dmNext.push(c?.mid !== undefined && b.mid !== undefined ? logit(c.mid) - logit(b.mid) : 0);
-      jumpAll += Math.abs(m); if (b.t % MIN === 0) jumpAtMin += Math.abs(m);
+  };
+  const finish = (): Row[] => {
+    const rows: Row[] = [];
+    for (const l of lives.values()) {
+      // Only contracts that close on this day and lived through it (the day before warms the books).
+      if (l.close <= d0 || l.close > d1 || l.open < d0) continue;
+      const q = l.slots.filter((s) => s.mid !== undefined);
+      if (q.length < 20) continue;
+      const mins = (l.close - l.open) / MIN;
+      const dm: number[] = [], di: number[] = [], dmNext: number[] = [];
+      let jumpAtMin = 0, jumpAll = 0;
+      for (let i = 1; i < l.slots.length; i++) {
+        const a = l.slots[i - 1], b = l.slots[i];
+        if (a.mid === undefined || b.mid === undefined || !a.ix || !b.ix) continue;
+        const m = logit(b.mid) - logit(a.mid), x = Math.log(b.ix / a.ix) * 1e4;
+        dm.push(m); di.push(x);
+        if (diag) { const g = (followDiag[src] ??= {}); const k = `${a.mid < 0.1 || a.mid > 0.9 ? 'tails' : 'middle'}${b.t % MIN === 0 ? ' at minute' : ''}`; (g[k] ??= { m: [], x: [] }).m.push(m); g[k].x.push(x); }
+        const c = l.slots[i + 1];
+        dmNext.push(c?.mid !== undefined && b.mid !== undefined ? logit(c.mid) - logit(b.mid) : 0);
+        jumpAll += Math.abs(m); if (b.t % MIN === 0) jumpAtMin += Math.abs(m);
+      }
+      const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+      const sd = (xs: number[]) => { const m = mean(xs); return Math.sqrt(mean(xs.map((x) => (x - m) ** 2))); };
+      const t5 = [...q].reverse().find((s) => s.t <= l.close - 5 * MIN);
+      const res = results.get(l.ticker);
+      const y = res === 'yes' ? 1 : res === 'no' ? 0 : NaN;
+      rows.push({ day, ticker: l.ticker, src, f: [
+        mean(q.map((s) => s.spread! * 100)), Math.log1p(mean(q.map((s) => s.top!))), Math.log1p(mean(q.map((s) => s.depth!))), q.length / Math.max(1, l.slots.length),
+        l.changes / mins, sd(dm), jumpAll > 0 ? jumpAtMin / jumpAll : 0, corr(dm, di), corr(dmNext, di),
+        l.trades / mins, l.trades ? Math.log1p(l.size / l.trades) : 0, sd(di), t5 && Number.isFinite(y) ? (t5.mid! - y) ** 2 : NaN,
+      ] });
     }
-    const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
-    const sd = (xs: number[]) => { const m = mean(xs); return Math.sqrt(mean(xs.map((x) => (x - m) ** 2))); };
-    const t5 = [...q].reverse().find((s) => s.t <= l.close - 5 * MIN);
-    const res = results.get(l.ticker);
-    const y = res === 'yes' ? 1 : res === 'no' ? 0 : NaN;
-    rows.push({ day, ticker: l.ticker, src, f: [
-      mean(q.map((s) => s.spread! * 100)), Math.log1p(mean(q.map((s) => s.top!))), Math.log1p(mean(q.map((s) => s.depth!))), q.length / Math.max(1, l.slots.length),
-      l.changes / mins, sd(dm), jumpAll > 0 ? jumpAtMin / jumpAll : 0, corr(dm, di), corr(dmNext, di),
-      l.trades / mins, l.trades ? Math.log1p(l.size / l.trades) : 0, sd(di), t5 && Number.isFinite(y) ? (t5.mid! - y) ** 2 : NaN,
-    ] });
-  }
-  return rows;
+    return rows;
+  };
+  return { push, finish };
+}
+
+export async function dayRows(file: string, day: string, src: string, results: ReadonlyMap<string, string>, keep?: ReadonlySet<string>, diag = true): Promise<Row[]> {
+  const b = rowBuilder(day, src, results, keep, diag);
+  for await (const e of events(file)) b.push(e);
+  return b.finish();
 }
 
 async function resultsOf(dir: string, days: string[]): Promise<Map<string, string>> {
@@ -811,10 +843,11 @@ async function stageBacktest(): Promise<void> {
 /** The twin's days through the tally's fill-in (research/goLiveTally.ts fillDayFile), as the deep history plays them. */
 async function stageFill(): Promise<void> {
   const { fillDayFile, depthSims } = await import('./goLiveTally');
-  const { readDepthModel } = await import('./history/depthSim');
   const src = arg('src'), dst = arg('dst'), how = arg('how', 'depth') as 'depth' | 'worst' | 'hold' | 'requote';
   const depth = arg('depth-model') ? readDepthModel(arg('depth-model')) : undefined;
   if (how === 'depth' && !depth) throw new Error('the depth fill-in needs --depth-model');
+  // A sweep's best candidate (--depth-params): its parameters go into the fill-in over the defaults and the model's own block.
+  const loaded = arg('depth-params') ? loadDepthParamsFile(arg('depth-params')) : undefined;
   // With a split on record the model must have been fitted on fit days only.
   if (how === 'depth' && arg('split-file')) {
     const sp = readSplit(arg('split-file'));
@@ -822,15 +855,265 @@ async function stageFill(): Promise<void> {
     assertHeldOut(sp);
     assertModelFitDays(arg('depth-model'), sp);
     console.log(`[twin] depth model fitted on fit days only (checked against the split's ${sp.fit.length} fit and ${sp.judge.length} judged day(s))`);
+    if (loaded && sp.name === 'confirm') throw new Error('depth_params_run is for dev and custom dispatches: the confirm run uses the code defaults, so promote the sweep\'s params to the defaults through a reviewed code change first');
+    // The sweep fitted these params on its FIT days: a split that judges one of them would judge on the days the params were tuned on.
+    if (loaded) assertDisjoint(loaded.fitDays, sp.judge);
+  }
+  if (how === 'depth') {
+    // Every depth fill-in says which parameters it used (the defaults are spelled out too).
+    const used = resolveDepthSimParams(depth!.params, loaded?.params);
+    const from = loaded ? `sweep best, generation ${loaded.gen}, loss ${loaded.loss}, fitted on FIT days only` : depth!.params ? "the model's own params block" : 'defaults, as in the code';
+    console.log(`[twin] depth simulator parameters (${from}): ${describeParams(used)}`);
   }
   fs.mkdirSync(dst, { recursive: true });
-  for (const f of fs.readdirSync(src).filter((x) => x.startsWith('md-'))) await fillDayFile(path.join(src, f), path.join(dst, f), { how }, depth);
+  for (const f of fs.readdirSync(src).filter((x) => x.startsWith('md-'))) await fillDayFile(path.join(src, f), path.join(dst, f), { how }, depth, loaded?.params);
   console.log(`[twin] ${how} fill-in written for ${fs.readdirSync(dst).length} day(s)`);
   if (depthSims.length) {
     const t = depthSims.reduce((a, x) => ({ seconds: a.seconds + x.stats.seconds, trades: a.trades + x.stats.trades, sweepPrints: a.sweepPrints + x.stats.sweepPrints, flickers: a.flickers + x.stats.flickers }), { seconds: 0, trades: 0, sweepPrints: 0, flickers: 0 });
     const perMin = (n: number) => (t.seconds ? ((60 * n) / t.seconds).toFixed(1) : '0');
     console.log(`[twin] ${arg('dst')} simulator: ${Math.round(t.seconds / 60)} contract-minutes, trades ${perMin(t.trades)}/min (sweep prints ${perMin(t.sweepPrints)}), flickers ${perMin(t.flickers)}/min`);
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// In-stream features: the fill-in's records straight into the features code, no filled day on disk.
+
+/** What the fill-in made while a day was built. */
+export interface SimActivity { seconds: number; trades: number; sweepPrints: number; flickers: number }
+
+/** One twin day's contract lives, built in-stream: `input` (a requote day's records in time order) goes through the depth fill-in
+ *  (research/goLiveTally.ts streamFiller, with `params` over the defaults and the model's own block) and every record it emits goes
+ *  into the features code as it comes (rowBuilder), so nothing is written. The rows are exactly those of fillDayFile followed by
+ *  dayRows on its file (a test holds it). `events`: how many records the fill-in emitted; `sink` (tests): each one as it is emitted. */
+export async function filledDayRows(input: Iterable<Record<string, any>> | AsyncIterable<Record<string, any>>, day: string, src: string, results: ReadonlyMap<string, string>, depth: DepthModel, params?: Partial<DepthSimParams>, o: { keep?: ReadonlySet<string>; diag?: boolean; sink?: (e: Record<string, any>) => void } = {}): Promise<{ rows: Row[]; events: number; sim: SimActivity }> {
+  const { streamFiller, depthSims } = await import('./goLiveTally');
+  const at = depthSims.length;
+  const f = streamFiller({ how: 'depth' }, depth, params);
+  const sim = depthSims[at];
+  const b = rowBuilder(day, src, results, o.keep, o.diag ?? true);
+  let events = 0;
+  try {
+    const emit = (x: Record<string, any>) => { b.push(x); events++; o.sink?.(x); };
+    const feed = (e: Record<string, any>) => { for (const x of f.push(e as Ev)) emit(x); };
+    if (Symbol.asyncIterator in input) for await (const e of input as AsyncIterable<Record<string, any>>) feed(e); else for (const e of input as Iterable<Record<string, any>>) feed(e);
+    for (const x of f.end()) emit(x);
+  } finally { depthSims.splice(at, 1); } // a sweep builds thousands of days: the global list must not keep each simulator
+  return { rows: b.finish(), events, sim: { ...sim.stats } };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Stage sweep: calibrate the depth simulator's constants on the FIT days only, with the judge as the objective.
+
+/** The days a sweep may read: the dev split's FIT days (all of them or at least two), never a DEV, CONFIRM or any other day. Any
+ *  split name but dev is refused. Returns the days. */
+export function resolveSweepFit(splitName: string, fitIn: string): string[] {
+  if (splitName !== 'dev') throw new Error(`a sweep reads the dev split's FIT days only: split "${splitName}" is refused (the only split a sweep takes is dev)`);
+  const fit = parseDays(fitIn, 'fit days');
+  if (!fit.length) throw new Error(`a sweep needs --fit-days (the dev split's FIT days: ${SPLITS.dev.fit.join(',')})`);
+  assertHeldOut({ name: 'dev', fit, judge: [] });
+  assertDisjoint(fit, SPLITS.dev.judge);
+  const stray = fit.filter((d) => !(SPLITS.dev.fit as readonly string[]).includes(d));
+  if (stray.length) throw new Error(`not FIT days of the dev split: ${stray.join(', ')} (a sweep reads ${SPLITS.dev.fit.join(', ')} only)`);
+  if (fit.length < MIN_CUSTOM_JUDGED_DAYS) throw new Error(`a sweep judges the FIT days leaving one day out: it needs at least ${MIN_CUSTOM_JUDGED_DAYS} fit days, got ${fit.length} (with one the AUC is a flat 0.500)`);
+  return fit;
+}
+
+/** Fewest lives either side must hold for a candidate to be judged. */
+export const MIN_SWEEP_LIVES = 20;
+/** Fewest lives one FIT day must hold on each side. Leave-one-day-out scores a fold only when its held-out day has both real and twin
+ *  lives; a day with none (the requote tickers do not match the real day, a thin day) drops its folds, and when every fold drops the AUC
+ *  is a flat 0.5 that reads as "indistinguishable": a pooled count cannot see that, so the days are counted one by one. */
+export const MIN_DAY_LIVES = 5;
+const countByDay = (rs: readonly Row[]): Map<string, number> => { const m = new Map<string, number>(); for (const r of rs) m.set(r.day, (m.get(r.day) ?? 0) + 1); return m; };
+export interface SweepJudgement { loss: number; features: Record<string, number>; regimes: Record<string, number | null>; top3: Array<{ name: string; auc: number }>; note?: string }
+
+/** The judge's numbers for one candidate: the all-feature leave-one-day-out AUC (the loss), each feature's own AUC and each regime's
+ *  AUC, computed exactly as the verdict computes them (discriminate, terciles of ixMoveBps over the real rows). A candidate whose
+ *  twin left too few lives, or fewer than half of the real ones, or fewer than MIN_DAY_LIVES on any day the real rows are on, is not
+ *  judged: loss 1 (an empty twin, or a day without twin lives, must never read as 0.5). The real side is the harness's, not the
+ *  candidate's: real rows on fewer than two days, or fewer than MIN_DAY_LIVES on a day, refuse the judgement (a throw). */
+export function judgeSweepRows(real: Row[], twin: Row[]): SweepJudgement {
+  if (real.length < MIN_SWEEP_LIVES) throw new Error(`the real FIT rows hold ${real.length} lives (at least ${MIN_SWEEP_LIVES} are needed): refusing to judge`);
+  const realDays = countByDay(real), twinDays = countByDay(twin);
+  if (realDays.size < 2) throw new Error(`the real FIT rows are on ${realDays.size} day(s) (at least 2 are needed: with one, leave-one-day-out runs no fold and the AUC is a flat 0.5): refusing to judge`);
+  const thin = [...realDays].filter(([, n]) => n < MIN_DAY_LIVES);
+  if (thin.length) throw new Error(`a FIT day holds fewer than ${MIN_DAY_LIVES} real lives (${thin.map(([d, n]) => `${d} ${n}`).join(', ')}): refusing to judge (its folds would be skipped and the AUC could read 0.5 for that reason)`);
+  if (twin.length < MIN_SWEEP_LIVES || twin.length < 0.5 * real.length) return { loss: 1, features: {}, regimes: {}, top3: [], note: `twin left ${twin.length} lives against ${real.length} real: not judged` };
+  const bare = [...realDays].filter(([d]) => (twinDays.get(d) ?? 0) < MIN_DAY_LIVES);
+  if (bare.length) return { loss: 1, features: {}, regimes: {}, top3: [], note: `a FIT day has no twin lives (${bare.map(([d, n]) => `${d} ${twinDays.get(d) ?? 0} twin against ${n} real`).join(', ')}; at least ${MIN_DAY_LIVES} needed): not judged` };
+  const all = FEATURES.map((_, j) => j), r4 = (x: number) => +x.toFixed(4);
+  const loss = discriminate(real, twin, all);
+  const each = FEATURES.map((name, j) => ({ name, auc: discriminate(real, twin, [j]) }));
+  const vi = FEATURES.indexOf('ixMoveBps');
+  const cuts = [1 / 3, 2 / 3].map((q) => { const v = real.map((r) => r.f[vi]).filter(Number.isFinite).sort((x, y) => x - y); return v[Math.floor(q * v.length)] ?? 0; });
+  const regimeOf = (r: Row) => (r.f[vi] <= cuts[0] ? 'calm' : r.f[vi] <= cuts[1] ? 'normal' : 'volatile');
+  const regimes: Record<string, number | null> = {};
+  for (const g of ['calm', 'normal', 'volatile']) { const rr = real.filter((r) => regimeOf(r) === g), tt = twin.filter((r) => regimeOf(r) === g); regimes[g] = rr.length > 20 && tt.length > 20 ? r4(discriminate(rr, tt, all)) : null; }
+  const top3 = [...each].sort((x, y) => Math.abs(y.auc - 0.5) - Math.abs(x.auc - 0.5)).slice(0, 3).map((e) => ({ name: e.name, auc: r4(e.auc) }));
+  if (!Number.isFinite(loss)) return { loss: 1, features: {}, regimes: {}, top3: [], note: 'the adversary returned no AUC: not judged' };
+  return { loss: +loss.toFixed(6), features: Object.fromEntries(each.map((e) => [e.name, r4(e.auc)])), regimes, top3 };
+}
+
+export interface SweepOpts {
+  /** Split the sweep was asked for (only dev). */
+  split?: string; fitDays: string; twinDir: string; realDir: string; modelFile: string; gen: number; shard: number; shards: number; perShard: number; parentsFile?: string; out: string;
+  /** Stop starting candidates after this many minutes from the stage's start (the shard then says it is incomplete). */
+  budgetMin?: number;
+  log?: (line: string) => void;
+}
+export const sweepShardName = (gen: number, shard: number, shards: number) => `sweep-g${gen}-shard${shard}of${shards}.json`;
+const hr = () => Number(process.hrtime.bigint()) / 1e9;
+
+/** One shard of one generation: every candidate of its slice judged on the FIT days, the shard file rewritten after each. */
+export async function runSweep(o: SweepOpts): Promise<SweepShardFile> {
+  const log = o.log ?? ((l: string) => console.log(l));
+  const fit = resolveSweepFit(o.split ?? 'dev', o.fitDays);
+  if (!Number.isInteger(o.perShard) || o.perShard < 1 || o.perShard > 500) throw new Error(`--candidates (per shard) must be a whole number from 1 to 500, got ${o.perShard}`);
+  const population = o.shards * o.perShard, [lo, hi] = shardRange(population, o.shards, o.shard);
+  // The cached real FIT days: present and made by this code (the same check the build runs).
+  const err = real15mError(checkReal15m(o.realDir, fit));
+  if (err) throw new Error(err);
+  const days = fit.map((d) => ({ day: d, twin: dayFile(o.twinDir, d), real: dayFile(o.realDir, d) }));
+  for (const x of days) if (!x.twin || !x.real) throw new Error(`a sweep needs the requote day and the cached real day of ${x.day} (twin ${x.twin ? 'ok' : `missing in ${o.twinDir}`}, real ${x.real ? 'ok' : `missing in ${o.realDir}`})`);
+  // The depth model: fitted on the FIT days only (the model records the days it read).
+  assertModelFitDays(o.modelFile, { fit, judge: [...SPLITS.dev.judge] });
+  const model = readDepthModel(o.modelFile);
+  if (!model) throw new Error(`${o.modelFile} is not a depth model`);
+  let parents: ReturnType<typeof parentsFrom> | undefined;
+  if (o.gen > 0) {
+    if (!o.parentsFile) throw new Error(`generation ${o.gen} needs --parents (the previous generation's elite.json)`);
+    parents = parentsFrom(JSON.parse(fs.readFileSync(o.parentsFile, 'utf8')));
+  } else if (o.parentsFile) log('[twin] sweep: generation 0 takes no parents (the file is ignored)');
+  const cands = generationCandidates(o.gen, population, parents?.parents, parents?.frac);
+  // What does not change between candidates, once per shard: the requote days' records, the labels, the real FIT rows.
+  const t0 = hr();
+  const results = await resultsOf(o.twinDir, fit);
+  const requote = new Map<string, Array<Record<string, any>>>(), realRows: Row[] = [], realPerDay = new Map<string, number>();
+  for (const x of days) {
+    const evs: Array<Record<string, any>> = [];
+    for await (const e of events(x.twin!)) evs.push(e);
+    requote.set(x.day, evs);
+    // The real day restricted to the twin's contracts (the build's restrictDay): this day's requote contracts, and the day before's
+    // when that is a FIT day too (contracts listed the day before); a day outside the fit set is never read.
+    const keep = new Set((await tickersOf(x.twin!)).keys());
+    const prev = new Date(Date.parse(`${x.day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10), pf = fit.includes(prev) ? days[fit.indexOf(prev)].twin : undefined;
+    if (pf) for (const t of (await tickersOf(pf)).keys()) keep.add(t);
+    const dr = await dayRows(x.real!, x.day, 'real', results, keep, false);
+    realPerDay.set(x.day, dr.length);
+    realRows.push(...dr);
+  }
+  // Every FIT day must have real lives of its own: a day with none (the requote day's tickers do not match the real day, a thin day) drops its
+  // leave-one-day-out folds, and with every fold dropped the AUC is a flat 0.5 for every candidate: refuse it here, before any candidate is judged.
+  const thinDays = fit.filter((d) => (realPerDay.get(d) ?? 0) < MIN_DAY_LIVES);
+  if (thinDays.length) throw new Error(`the real FIT day(s) ${thinDays.map((d) => `${d} (${realPerDay.get(d) ?? 0} lives)`).join(', ')} hold fewer than ${MIN_DAY_LIVES} contract lives that the requote day also has (at least ${MIN_DAY_LIVES} per FIT day are needed): the requote day's tickers do not match the real day's, or the real day is thin; refusing to sweep (every candidate would read AUC 0.5)`);
+  if (realRows.length < MIN_SWEEP_LIVES) throw new Error(`the real FIT days hold ${realRows.length} contract lives (at least ${MIN_SWEEP_LIVES} are needed)`);
+  log(`[twin] sweep g${o.gen} shard ${o.shard}/${o.shards}: candidates ${lo}..${hi - 1} of ${population} (${hi - lo} here), ${fit.length} FIT day(s), ${realRows.length} real lives, ${[...requote.values()].reduce((a, e) => a + e.length, 0)} requote records; loaded in ${(hr() - t0).toFixed(1)} s`);
+  fs.mkdirSync(o.out, { recursive: true });
+  const file = path.join(o.out, sweepShardName(o.gen, o.shard, o.shards));
+  const shardFile: SweepShardFile = { kind: 'sweep-shard', version: SWEEP_VERSION, gen: o.gen, shard: o.shard, shards: o.shards, perShard: o.perShard, population, fitDays: fit, modelDays: model.days, complete: false, results: [] };
+  const save = () => { fs.writeFileSync(`${file}.tmp`, JSON.stringify(shardFile)); fs.renameSync(`${file}.tmp`, file); };
+  save();
+  let events_ = 0, simSec = 0, judgeSec = 0;
+  for (let i = lo; i < hi; i++) {
+    if (o.budgetMin !== undefined && (hr() - t0) / 60 >= o.budgetMin) { log(`[twin] sweep g${o.gen} shard ${o.shard}/${o.shards}: the ${o.budgetMin}-minute budget is spent after ${shardFile.results.length} of ${hi - lo} candidates; the rest are not judged (the shard is kept as incomplete)`); break; }
+    const params = resolveDepthSimParams(cands[i]), c0 = hr();
+    const twinRows: Row[] = [];
+    for (const x of days) { const r = await filledDayRows(requote.get(x.day)!, x.day, 'depth', results, model, params, { diag: false }); twinRows.push(...r.rows); events_ += r.events; }
+    const c1 = hr(), j = judgeSweepRows(realRows, twinRows), c2 = hr();
+    simSec += c1 - c0; judgeSec += c2 - c1;
+    const res: SweepResult = { gen: o.gen, index: i, params, loss: j.loss, features: j.features, regimes: j.regimes, top3: j.top3, realRows: realRows.length, twinRows: twinRows.length, seconds: +(c2 - c0).toFixed(1), ...(j.note ? { note: j.note } : {}) };
+    shardFile.results.push(res);
+    save();
+    log(`[twin] sweep g${o.gen} c${i}: loss ${j.loss.toFixed(4)}${j.top3.length ? ` (gives it away: ${j.top3.map((t) => `${t.name} ${t.auc}`).join(', ')})` : ` (${j.note})`}; ${twinRows.length} twin lives; ${res.seconds} s`);
+  }
+  shardFile.complete = shardFile.results.length === hi - lo;
+  save();
+  const best = rankResults(shardFile.results)[0];
+  log(`[twin] sweep g${o.gen} shard ${o.shard}/${o.shards}: ${shardFile.results.length} candidates, best loss ${best ? best.loss.toFixed(4) : 'na'}${best ? ` (c${best.index})` : ''}; ${(simSec / Math.max(1, shardFile.results.length)).toFixed(1)} s a candidate in the fill-in and features (${Math.round(events_ / Math.max(1e-9, simSec))} records a second), ${(judgeSec / Math.max(1, shardFile.results.length)).toFixed(1)} s in the judge`);
+  return shardFile;
+}
+
+/** The merged generation: its candidates ranked, the best one, and the elite (the next generation's parents). `lines`: what to print. */
+export interface SweepCollected { best: Record<string, unknown>; elite: Record<string, unknown>; results: Record<string, unknown>; lines: string[] }
+
+export function collectSweep(dir: string, o: { gen: number; shards: number; perShard: number; partial?: boolean }): SweepCollected {
+  const files: SweepShardFile[] = [];
+  for (let i = 0; i < o.shards; i++) {
+    const f = path.join(dir, sweepShardName(o.gen, i, o.shards));
+    if (fs.existsSync(f)) files.push(JSON.parse(fs.readFileSync(f, 'utf8')) as SweepShardFile);
+  }
+  // Every shard names the days it read: FIT days of the dev split, one set, and a model fitted on them only.
+  const fits = new Set(files.map((f) => JSON.stringify(f.fitDays))), models = new Set(files.map((f) => JSON.stringify(f.modelDays)));
+  if (fits.size > 1 || models.size > 1) throw new Error('the shard files were made on different fit days or depth models: they are not one generation');
+  const fitDays = files.length ? resolveSweepFit('dev', files[0].fitDays.join(',')) : [];
+  if (files.length) assertModelFitDaysList(files[0].modelDays, fitDays);
+  if (!files.length && !o.partial) throw new Error(`no shard file for generation ${o.gen} in ${dir}`);
+  const { results, missing, population, incomplete, noFile } = mergeShards(files, { gen: o.gen, shards: o.shards, perShard: o.perShard, partial: o.partial });
+  const ranked = rankResults(results), best = ranked[0];
+  const elite = eliteOf(ranked, ELITE_FRACTION);
+  const dflt = results.find((r) => r.index === 0 && o.gen === 0);
+  const lines = [`[twin] sweep g${o.gen}: ${results.length} of ${population} candidates judged by ${files.length} shard(s)${missing.length ? ` (${missing.length} missing: partial)` : ''}; best loss ${best.loss.toFixed(4)} (c${best.index}), median ${ranked[Math.floor(ranked.length / 2)].loss.toFixed(4)}, worst ${ranked[ranked.length - 1].loss.toFixed(4)}`];
+  // A partial generation says which shards fell short (a green job that stopped at its budget is incomplete too, not only a failed one).
+  for (const x of incomplete) lines.push(`[twin] sweep g${o.gen}: shard ${x.shard} incomplete: ${x.have} of ${x.of} candidates judged (it stopped at its budget, or its job failed)`);
+  for (const i of noFile) lines.push(`[twin] sweep g${o.gen}: shard ${i} has no result file (its job failed before its first candidate)`);
+  if (dflt) lines.push(`[twin] sweep g${o.gen}: the defaults (c0) score ${dflt.loss.toFixed(4)}; ${best.index === 0 ? 'no candidate beat them' : `the best candidate beats them by ${(dflt.loss - best.loss).toFixed(4)}`}`);
+  for (const [k, r] of ranked.slice(0, 5).entries()) {
+    lines.push(`[twin] sweep top ${k + 1}: c${r.index} loss ${r.loss.toFixed(4)}; ${describeParams(r.params)}`);
+    lines.push(`[twin] sweep top ${k + 1}: gives it away ${r.top3.map((t) => `${t.name} ${t.auc}`).join(', ') || 'n/a'}; regimes ${Object.entries(r.regimes).map(([g, a]) => `${g} ${a ?? 'n/a'}`).join(', ') || 'n/a'}`);
+  }
+  // The exact values of the best candidate, every digit (JSON prints the shortest text that reads back as the same number): the 4-digit lines
+  // above are for reading only. A promotion to the code defaults pastes THIS line (RUNBOOK 9.5); names and numbers only, public-safe.
+  lines.push(`[twin] sweep best params exact (g${o.gen} c${best.index}, loss ${best.loss.toFixed(4)}): ${JSON.stringify(best.params)}`);
+  const common = { version: SWEEP_VERSION, gen: o.gen, split: 'dev', fitDays, modelDays: files[0]?.modelDays ?? [], population };
+  return {
+    best: { kind: 'sweep-best', ...common, evaluated: results.length, index: best.index, loss: best.loss, params: best.params, features: best.features, regimes: best.regimes, top3: best.top3, ...(dflt ? { defaultLoss: dflt.loss } : {}) },
+    elite: { kind: 'sweep-elite', ...common, eliteFraction: ELITE_FRACTION, elite },
+    results: { kind: 'sweep-results', ...common, results: ranked },
+    lines,
+  };
+}
+
+/** The model's own days must be fit days (a sweep's depth model is fitted on the FIT days only). */
+function assertModelFitDaysList(modelDays: readonly string[], fit: readonly string[]): void {
+  if (!modelDays.length) throw new Error('a shard file does not record the days its depth model was fitted on');
+  assertDisjoint(modelDays, SPLITS.dev.judge);
+  const stray = modelDays.filter((d) => !fit.includes(d));
+  if (stray.length) throw new Error(`the depth model was fitted on days outside the fit set: ${stray.join(', ')}`);
+}
+
+/** A sweep's best.json as the fill-in reads it (--depth-params): the file must be a sweep's best made on the dev split's FIT days
+ *  only, and every parameter name and number must be a known, valid one. */
+export function loadDepthParamsFile(file: string): { params: DepthSimParams; gen: number; loss: number; fitDays: string[] } {
+  let j: Record<string, any>;
+  try { j = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { throw new Error(`depth params file ${file} is not readable JSON (${String((e as Error).message).slice(0, 120)})`); }
+  if (j?.kind !== 'sweep-best' || j.version !== SWEEP_VERSION) throw new Error(`depth params file ${file} is not a ${SWEEP_VERSION} sweep best.json (kind ${String(j?.kind)}, version ${String(j?.version)})`);
+  if (j.split !== 'dev') throw new Error(`depth params file ${file} was not made on the dev split (split ${String(j.split)})`);
+  resolveSweepFit('dev', Array.isArray(j.fitDays) ? j.fitDays.join(',') : '');
+  if (typeof j.loss !== 'number' || !j.params || typeof j.params !== 'object') throw new Error(`depth params file ${file} has no params and loss`);
+  return { params: resolveDepthSimParams(j.params), gen: Number(j.gen), loss: j.loss, fitDays: j.fitDays };
+}
+
+async function stageSweep(): Promise<void> {
+  const { shard, shards } = parseShard(arg('shard', '0/1'));
+  const o: SweepOpts = {
+    split: arg('split', 'dev'), fitDays: arg('fit-days'), twinDir: arg('twin-requote'), realDir: arg('real'), modelFile: arg('depth-model'),
+    gen: Number(arg('gen', '0')), shard, shards, perShard: Number(arg('candidates', '8')), parentsFile: arg('parents') || undefined, out: arg('out', 'data/sweep'),
+    budgetMin: arg('budget-min') ? Number(arg('budget-min')) : undefined,
+  };
+  if (!o.twinDir || !o.realDir || !o.modelFile) throw new Error('sweep needs --twin-requote (the requote FIT days), --real (the cached real FIT days), --depth-model and --fit-days');
+  if (!Number.isInteger(o.gen) || o.gen < 0) throw new Error(`--gen must be a whole number of at least 0, got "${arg('gen')}"`);
+  await runSweep(o);
+}
+
+function stageSweepCollect(): void {
+  const gen = Number(arg('gen', '0')), shards = Number(arg('shards', '0')), perShard = Number(arg('candidates', '0')), out = arg('out'), dir = arg('dir');
+  if (!dir || !out || !(shards >= 1) || !(perShard >= 1)) throw new Error('sweep-collect needs --dir (the shard files), --out, --gen, --shards and --candidates (per shard)');
+  const c = collectSweep(dir, { gen, shards, perShard, partial: process.argv.includes('--partial') });
+  fs.mkdirSync(out, { recursive: true });
+  fs.writeFileSync(path.join(out, 'best.json'), JSON.stringify(c.best, null, 1));
+  fs.writeFileSync(path.join(out, 'elite.json'), JSON.stringify(c.elite, null, 1));
+  fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify(c.results));
+  for (const l of c.lines) console.log(l);
 }
 
 /** A confirm look: the dispatch's note (free text) and its number (how many confirm looks there have been, counted by
@@ -939,6 +1222,8 @@ export async function historyTwinMain(): Promise<void> {
   if (stage === 'features') return stageFeatures();
   if (stage === 'backtest') return stageBacktest();
   if (stage === 'fill') return stageFill();
+  if (stage === 'sweep') return stageSweep();
+  if (stage === 'sweep-collect') return stageSweepCollect();
   if (stage === 'verdict') { await stageVerdict(); return; }
   throw new Error(`unknown --stage ${stage}`);
 }

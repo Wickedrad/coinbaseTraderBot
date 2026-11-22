@@ -6,10 +6,17 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import crypto from 'crypto';
 import {
-  assertDisjoint, assertModelFitDays, assertHeldOut, auc, CONFIRM_DAYS, checkReal15m, corrMatrix, dayRows, discriminate, discriminatePerDay, FEATURES, isBlind, MIN_CUSTOM_JUDGED_DAYS,
-  outcome, parseDays, parseFailedSteps, prepDay, prepReport, prepStatus, quantile, quantiles3, real15mError, real15mTag, REAL15M_VERSION, resolveSplit, type Row, SPLITS, stageVerdict, stressAuc,
-  topCorrDiffs, twinSource,
+  assertDisjoint, assertModelFitDays, assertHeldOut, auc, CONFIRM_DAYS, checkReal15m, collectSweep, corrMatrix, dayRows, discriminate, discriminatePerDay, FEATURES, filledDayRows, followDiag, isBlind,
+  judgeSweepRows, loadDepthParamsFile, MIN_CUSTOM_JUDGED_DAYS, MIN_DAY_LIVES, MIN_SWEEP_LIVES, outcome, parseDays, parseFailedSteps, prepDay, prepReport, prepStatus, quantile, quantiles3, real15mError, real15mTag,
+  REAL15M_VERSION, resolveSplit, resolveSweepFit, rowBuilder, runSweep, type Row, SPLITS, stageVerdict, stressAuc, sweepShardName, topCorrDiffs, twinSource, type SweepCollected,
 } from '../research/historyTwin';
+import {
+  CEM_SD_FLOOR, cemStep, clipParams, describeParams, eliteOf, eliteStats, fromSpace, generationCandidates, latinHypercube, mergeShards, parentsFrom, parseShard, rankResults, shardRange,
+  SWEEP_VERSION, toSpace, type SweepShardFile,
+} from '../research/history/depthParamSearch';
+import { DEFAULT_DEPTH_SIM_PARAMS, DEPTH_PARAM_NAMES, DEPTH_PARAM_SPACE, readDepthModel, resolveDepthSimParams, type DepthSimParams } from '../research/history/depthSim';
+import { depthSims, fillDayFile } from '../research/goLiveTally';
+import { synthModel, synthRequoteDay, writeEventsGz } from './twinSweepSynth';
 import { tmpDir } from './helpers';
 
 const D0 = Date.UTC(2026, 9, 28);
@@ -262,7 +269,7 @@ test('the workflow spells out the same splits and the prep limits', () => {
   // The 8-job rule holds per thread: prep and build share one group (never together), every matrix is at most 7 wide, so a
   // re-verdict beside them makes 8.
   for (const m of y.matchAll(/max-parallel: (\d+)/g)) assert.ok(Number(m[1]) <= 7, `max-parallel ${m[1]} is over 7`);
-  assert.equal([...y.matchAll(/max-parallel: 7\b/g)].length, 2, 'the prep and the backtest matrices are both 7 wide');
+  assert.equal([...y.matchAll(/max-parallel: 7\b/g)].length, 3, 'the prep, the backtest and the sweep matrices are each 7 wide (the sweep is its own dispatch, never beside the others)');
   const groups = [...y.matchAll(/^  group: (.*)$/gm)].map((m) => m[1]);
   assert.equal(groups.length, 1, 'one concurrency group expression');
   assert.match(groups[0], /history-twin-\$\{\{ inputs\.reverdict_run && 'reverdict' \|\| 'heavy' \}\}/, 'prep and build are one group, the re-verdict another');
@@ -1000,4 +1007,700 @@ test('a refused prep dispatch says why in a commit comment (prep-plan), and the 
   assert.ok(!/echo "::error::/.test(block) && /twin_fail "prep \$DAY: no recording for \$DAY on Drive/.test(block), 'a prep day that has no recording fails through twin_fail');
   // plan job permissions: contents write is only for that comment
   assert.match(y.split('\n').slice(lines.indexOf('  prep-plan:'), at).join('\n'), /permissions:\n      contents: write/);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The depth simulator sweep (H2): the in-stream features, the FIT-days-only gate, the judge, the candidate search, the stage and the
+// workflow's sweep jobs. Synthetic days only (tests/twinSweepSynth.ts): nothing here reads a recording.
+
+const FIT_DAYS = [...SPLITS.dev.fit];
+const DEV_JUDGED = [...SPLITS.dev.judge];
+const gunzipLines = (f: string) => zlib.gunzipSync(fs.readFileSync(f)).toString('utf8').split('\n').filter(Boolean);
+const resultsOfEvents = (evs: ReadonlyArray<Record<string, any>>) => new Map(evs.filter((e) => e.k === 'result').map((e) => [String(e.ticker), String(e.result)] as const));
+
+test('in-stream rows equal the file route exactly (fillDayFile, then dayRows), and a sweep leaves no global behind', async () => {
+  const day = '2026-11-12', evs = synthRequoteDay({ day, assets: ['BTC', 'ETH'], windows: 4, seed: 3 }) as Array<Record<string, any>>;
+  const dir = tmpDir(), src = path.join(dir, `md-${day}.jsonl.gz`);
+  writeEventsGz(src, evs);
+  const results = resultsOfEvents(evs);
+  assert.ok(results.size >= 8, 'a day of contracts with results');
+  const own = synthModel({ days: FIT_DAYS });
+  const withBlock = { ...own, params: { revertS: 20, tradeRateMult: 1.4 } };
+  const cand: Partial<DepthSimParams> = { revertS: 4, stepSd: 0.2, flickBasePerSec: 1.5, sweepPrints: 5, withinSd: 0.4, activitySd: 1.1, capMult: 2, flickBackMinMs: 10, flickBackSpanMs: 300, tradeRateMult: 1.7, tradeSizeMult: 0.6, levelSizeMult: 1.8 };
+  const keepFew = new Set([...results.keys()].slice(0, 5));
+  const cases: Array<[string, typeof own, Partial<DepthSimParams> | undefined, ReadonlySet<string> | undefined]> = [
+    ['defaults', own, undefined, undefined], ['a candidate', own, cand, undefined], ["the model's own block", withBlock, undefined, undefined], ['the block, then a candidate over it', withBlock, cand, undefined], ['a candidate and a keep set', own, cand, keepFew],
+  ];
+  const followBefore = JSON.stringify(Object.keys(followDiag));
+  for (const [i, [label, model, params, keep]] of cases.entries()) {
+    const dst = path.join(dir, `filled-${i}.jsonl.gz`);
+    await fillDayFile(src, dst, { how: 'depth' }, model, params);
+    const viaFile = await dayRows(dst, day, 'depth', results, keep, false);
+    const sims = depthSims.length;
+    const emitted: Array<Record<string, any>> = [];
+    const live = await filledDayRows(evs, day, 'depth', results, model, params, { keep, diag: false, sink: (x) => emitted.push(x) });
+    assert.equal(depthSims.length, sims, `${label}: the global simulator list did not grow`);
+    assert.deepEqual(emitted, gunzipLines(dst).map((l) => JSON.parse(l)), `${label}: the in-stream route emits the very records the file route wrote, the tail the fill-in releases at the end included`);
+    assert.ok(viaFile.length >= (keep ? 5 : 8) - 1, `${label}: ${viaFile.length} contract lives`);
+    assert.deepEqual(live.rows, viaFile, `${label}: the in-stream rows are the file route's, number for number (a -0 told from a 0, a NaN from a number)`);
+    assert.equal(live.events, gunzipLines(dst).length, `${label}: every emitted record went into the features`);
+    assert.ok(live.sim.trades > 0 && live.sim.seconds > 0, `${label}: the fill-in's activity is reported`);
+  }
+  assert.equal(JSON.stringify(Object.keys(followDiag)), followBefore, 'diag false: the global follow diagnostics are not fed');
+  // an async source reads the same as an array
+  async function* stream() { for (const e of evs) yield e; }
+  const a = await filledDayRows(stream(), day, 'depth', results, own, cand, { diag: false }), b = await filledDayRows(evs, day, 'depth', results, own, cand, { diag: false });
+  assert.deepEqual(a.rows, b.rows);
+  // the parameters matter: a candidate's rows are not the defaults'
+  assert.notDeepEqual((await filledDayRows(evs, day, 'depth', results, own, cand, { diag: false })).rows, (await filledDayRows(evs, day, 'depth', results, own, undefined, { diag: false })).rows);
+  // the row builder is what both routes share: pushed by hand it makes the same rows
+  const rb = rowBuilder(day, 'depth', results, undefined, false);
+  for (const e of evs) rb.push(e);
+  assert.ok(rb.finish().length >= 8);
+});
+
+test('a sweep reads the dev split\'s FIT days only: a DEV day, a CONFIRM day, another day, another split or one day are refused', async () => {
+  assert.deepEqual(resolveSweepFit('dev', FIT_DAYS.join(',')), FIT_DAYS);
+  assert.deepEqual(resolveSweepFit('dev', '2026-11-12, 2026-11-11'), ['2026-11-12', '2026-11-11'], 'two of the three FIT days are enough');
+  for (const [split, days, want] of [
+    ['dev', `${FIT_DAYS.join(',')},2026-11-13`, /overlap.*2026-11-13/], ['dev', '2026-11-11,2026-11-14', /overlap.*2026-11-14/], ['dev', '2026-11-16,2026-11-17,2026-11-11', /overlap/],
+    ['dev', '2026-11-11,2026-11-18', /confirm days.*2026-11-18/], ['dev', '2026-11-19,2026-11-20', /confirm days/], ['dev', '2026-11-11,2026-11-10', /not FIT days of the dev split: 2026-11-10/],
+    ['dev', '2026-11-11,2026-11-21', /not FIT days of the dev split: 2026-11-21/], ['dev', '2026-11-11', /at least 2 fit days, got 1/], ['dev', '', /needs --fit-days/], ['dev', '2026-11-31,2026-11-11', /not a YYYY-MM-DD day/],
+    ['confirm', FIT_DAYS.join(','), /split "confirm" is refused/], ['custom', FIT_DAYS.join(','), /split "custom" is refused/], ['weekly', FIT_DAYS.join(','), /refused/], ['', FIT_DAYS.join(','), /refused/],
+  ] as Array<[string, string, RegExp]>) assert.throws(() => resolveSweepFit(split, days), want, `${split} ${days}`);
+  // The stage refuses before it reads anything: no file of these paths exists. Every refusal names the days, never a count of rows.
+  const dirs = { twinDir: path.join(tmpDir(), 'none'), realDir: path.join(tmpDir(), 'none'), modelFile: path.join(tmpDir(), 'none.json'), gen: 0, shard: 0, shards: 1, perShard: 1, out: tmpDir() };
+  for (const [split, days, want] of [['confirm', FIT_DAYS.join(','), /split "confirm" is refused/], ['dev', '2026-11-11,2026-11-13', /overlap.*2026-11-13/], ['dev', '2026-11-11,2026-11-19', /confirm days/], ['dev', '2026-11-11,2026-11-12,2026-11-10', /not FIT days/]] as Array<[string, string, RegExp]>) {
+    await assert.rejects(runSweep({ ...dirs, split, fitDays: days }), want, `${split} ${days}`);
+    assert.deepEqual(fs.readdirSync(dirs.out), [], 'nothing written for a refused sweep');
+  }
+  // the command line: the same refusals, a non-zero exit, and the reason as the first stderr line
+  const run = (...a: string[]) => spawnSync(process.execPath, ['--import', 'tsx', 'research/historyTwin.ts', '--stage', 'sweep', '--twin-requote', dirs.twinDir, '--real', dirs.realDir, '--depth-model', dirs.modelFile, '--out', dirs.out, ...a], { encoding: 'utf8' });
+  const conf = run('--split', 'confirm', '--fit-days', FIT_DAYS.join(','), '--gen', '0');
+  assert.notEqual(conf.status, 0); assert.match(conf.stderr, /^\[twin\] ERROR: a sweep reads the dev split's FIT days only: split "confirm" is refused/);
+  const devDay = run('--fit-days', '2026-11-11,2026-11-13', '--gen', '0');
+  assert.notEqual(devDay.status, 0); assert.match(devDay.stderr, /^\[twin\] ERROR: fit days and judged days overlap.*2026-11-13/);
+  assert.match(run('--fit-days', FIT_DAYS.join(','), '--gen', '1.5').stderr, /--gen must be a whole number/);
+  assert.match(run('--fit-days', FIT_DAYS.join(','), '--shard', '7/7').stderr, /shard 7 is not in 0\.\.6/);
+  assert.match(spawnSync(process.execPath, ['--import', 'tsx', 'research/historyTwin.ts', '--stage', 'sweep', '--fit-days', FIT_DAYS.join(',')], { encoding: 'utf8' }).stderr, /sweep needs --twin-requote/);
+});
+
+test('a sweep refuses a depth model fitted on a DEV or CONFIRM day, and real days made by another version', async () => {
+  const fx = await sweepFixture();
+  const bad = path.join(tmpDir(), 'depth_model.json');
+  for (const [days, want] of [[[...FIT_DAYS, '2026-11-13'], /overlap.*2026-11-13/], [[...FIT_DAYS, '2026-11-19'], /outside the fit set|overlap/], [['2026-11-11', '2026-11-10'], /outside the fit set: 2026-11-10/], [[], /does not record the days/]] as Array<[string[], RegExp]>) {
+    fs.writeFileSync(bad, JSON.stringify(synthModel({ days })));
+    await assert.rejects(runSweep({ ...fx.opts, modelFile: bad, out: tmpDir() }), want, days.join(','));
+  }
+  // a real day whose meta names another version is stale: the sweep names the prep dispatch to run, as the build does
+  const stale = tmpDir(); for (const f of fs.readdirSync(fx.real)) fs.copyFileSync(path.join(fx.real, f), path.join(stale, f));
+  fs.writeFileSync(path.join(stale, 'meta-2026-11-12.json'), JSON.stringify({ day: '2026-11-12', version: 'r15m-0|exclude=DOGE', bytes: 1 }));
+  await assert.rejects(runSweep({ ...fx.opts, realDir: stale, out: tmpDir() }), /another version: 2026-11-12.*prep_days=2026-11-12 force_prep=true/);
+  await assert.rejects(runSweep({ ...fx.opts, twinDir: tmpDir(), out: tmpDir() }), /needs the requote day and the cached real day of 2026-11-11 \(twin missing/);
+  await assert.rejects(runSweep({ ...fx.opts, perShard: 0, out: tmpDir() }), /--candidates \(per shard\) must be a whole number from 1 to 500/);
+  await assert.rejects(runSweep({ ...fx.opts, perShard: 501, out: tmpDir() }), /from 1 to 500/);
+  await assert.rejects(runSweep({ ...fx.opts, gen: 1, out: tmpDir() }), /generation 1 needs --parents/);
+});
+
+test('the sweep\'s judge is the verdict\'s: the same loss, feature AUCs and regime AUCs; a short twin is loss 1, never 0.5', async () => {
+  // the dev verdict over the same rows (300 real, a twin shifted on feature 0)
+  const out = verdictDir('dev', () => rows('twin', 0.4, 32));
+  const real: Row[] = JSON.parse(fs.readFileSync(path.join(out, 'features-real.json'), 'utf8')), twin: Row[] = JSON.parse(fs.readFileSync(path.join(out, 'features-depth.json'), 'utf8'));
+  const { report } = await verdictLines(out);
+  const v = report.twins.depth, j = judgeSweepRows(real, twin);
+  assert.equal(+j.loss.toFixed(3), v.auc, 'the loss is the verdict\'s all-feature leave-one-day-out AUC');
+  assert.equal(j.loss, +discriminate(real, twin, FEATURES.map((_, k) => k)).toFixed(6), 'and it is discriminate()\'s number, to the sixth place');
+  assert.deepEqual(Object.keys(j.features), [...FEATURES], 'every one of the 13 features');
+  for (const f of v.features as Array<{ name: string; auc: number }>) assert.ok(Math.abs(j.features[f.name] - f.auc) <= 0.0006, `${f.name}: ${j.features[f.name]} against the verdict's ${f.auc}`);
+  for (const g of ['calm', 'normal', 'volatile']) { const a = v.regimes[g].auc; assert.ok(a === null ? j.regimes[g] === null : Math.abs((j.regimes[g] as number) - a) <= 0.0006, `regime ${g}`); }
+  assert.equal(j.top3.length, 3); assert.equal(j.top3[0].name, 'spreadC', 'the shifted feature gives the twin away first');
+  assert.ok(j.loss > 0.7 && !j.note);
+  // the same rows twice score a flat 0.5, and a twin of nothing, or of a few rows, is not 0.5
+  const same = judgeSweepRows(real, real.map((r) => ({ ...r, src: 'twin' })));
+  assert.equal(same.loss, 0.5);
+  for (const t of [[], twin.slice(0, MIN_SWEEP_LIVES - 1), twin.slice(0, Math.floor(real.length / 2) - 1)]) { const r = judgeSweepRows(real, t); assert.equal(r.loss, 1, `${t.length} twin lives`); assert.match(r.note!, /not judged/); assert.deepEqual(r.features, {}); }
+  assert.equal(judgeSweepRows(real, twin.slice(0, Math.ceil(real.length / 2))).note, undefined, 'half the real lives is enough');
+  assert.throws(() => judgeSweepRows(real.slice(0, MIN_SWEEP_LIVES - 1), twin), /the real FIT rows hold 19 lives/);
+  // a candidate that breaks the adversary (NaN features) is not judged either
+  const nan = twin.map((r) => ({ ...r, f: r.f.map(() => NaN) }));
+  assert.ok(Number.isFinite(judgeSweepRows(real, nan).loss));
+});
+
+test('the judge refuses a day with no lives on either side: a flat 0.5 from skipped folds is never a score (per-day coverage)', () => {
+  // 100 real and 100 twin lives on each of three days; the twin is fully separable on feature 0 (true AUC 1.0)
+  const real = rows('real', 0, 1), twin = rows('twin', 5, 2), days = [...new Set(real.map((r) => r.day))].sort();
+  assert.equal(days.length, 3);
+  const onDay = (rs: Row[], ...ds: string[]) => rs.filter((r) => ds.includes(r.day));
+  assert.ok(judgeSweepRows(real, twin).loss > 0.99, 'the whole set: the separable twin is found');
+  // (1) real rows on ONE day only (twin on all three): every fold is skipped or single-class and the AUC came out 0.5; now a refusal
+  assert.throws(() => judgeSweepRows(onDay(real, days[0]), twin), /real FIT rows are on 1 day\(s\) \(at least 2 are needed.*flat 0\.5\): refusing to judge/);
+  // (2) a real day below the floor (one day thin)
+  const thinReal = [...onDay(real, days[0], days[1]), ...onDay(real, days[2]).slice(0, MIN_DAY_LIVES - 1)];
+  assert.ok(thinReal.length >= MIN_SWEEP_LIVES);
+  assert.throws(() => judgeSweepRows(thinReal, twin), new RegExp(`fewer than ${MIN_DAY_LIVES} real lives \\(${days[2]} ${MIN_DAY_LIVES - 1}\\)`));
+  // (3) twin rows on ONE day only: real on A, B, C against twin on C (and A and B have none): loss 1 with a note, never 0.5
+  const oneTwinDay = judgeSweepRows(real, [...onDay(twin, days[2]), ...onDay(twin, days[2]).map((r, i) => ({ ...r, ticker: `X${i}` }))]);
+  assert.equal(oneTwinDay.loss, 1); assert.match(oneTwinDay.note!, /a FIT day has no twin lives \(2026-10-20 0 twin against 100 real, 2026-10-21 0 twin against 100 real; at least 5 needed\): not judged/);
+  assert.deepEqual(oneTwinDay.features, {}); assert.deepEqual(oneTwinDay.top3, []);
+  // (4) real on days A and B against twin on day C only
+  const ab = judgeSweepRows(onDay(real, days[0], days[1]), onDay(twin, days[2]));
+  assert.equal(ab.loss, 1); assert.match(ab.note!, /no twin lives/); assert.notEqual(ab.loss, 0.5);
+  // (5) one day short of twin lives (fewer than the floor), the others whole: still refused with a note, and it names the day
+  const short = judgeSweepRows(real, [...onDay(twin, days[0], days[1]), ...onDay(twin, days[2]).slice(0, MIN_DAY_LIVES - 1)]);
+  assert.equal(short.loss, 1); assert.match(short.note!, new RegExp(`${days[2]} ${MIN_DAY_LIVES - 1} twin against 100 real`));
+  // (6) exactly the floor on a day is enough, and the judge then scores the separable twin high, not 0.5
+  const edge = judgeSweepRows(real, [...onDay(twin, days[0], days[1]), ...onDay(twin, days[2]).slice(0, MIN_DAY_LIVES)]);
+  assert.equal(edge.note, undefined); assert.ok(edge.loss > 0.9, `${edge.loss}`);
+  // no input of any shape above made a 0.5 out of a separable twin
+  for (const loss of [oneTwinDay.loss, ab.loss, short.loss]) assert.notEqual(loss, 0.5);
+});
+
+test('generation 0 is the defaults plus a Latin hypercube: seeded, in bounds, one point in every stratum', () => {
+  const a = generationCandidates(0, 40), b = generationCandidates(0, 40);
+  assert.deepEqual(a, b, 'the same inputs give the same candidates on every shard');
+  assert.equal(a.length, 40); assert.deepEqual(a[0], { ...DEFAULT_DEPTH_SIM_PARAMS }, 'candidate 0 is today\'s defaults');
+  assert.notDeepEqual(generationCandidates(0, 41).slice(1, 6), a.slice(1, 6), 'another population is another sample');
+  assert.deepEqual(generationCandidates(0, 1), [{ ...DEFAULT_DEPTH_SIM_PARAMS }], 'a population of one is the defaults');
+  for (const p of a) for (const n of DEPTH_PARAM_NAMES) {
+    const s = DEPTH_PARAM_SPACE[n];
+    assert.ok(Number.isFinite(p[n]) && p[n] >= s.lo && p[n] <= s.hi, `${n} ${p[n]} in [${s.lo}, ${s.hi}]`);
+    if (s.int) assert.equal(p[n], Math.round(p[n]), `${n} is a whole number`);
+  }
+  // the sample (candidates 1..39): each parameter's range, in the sampling space, is cut in 39 strata and each is used once
+  const lhs = a.slice(1);
+  for (const n of DEPTH_PARAM_NAMES) {
+    if (DEPTH_PARAM_SPACE[n].int) continue;
+    const lo = toSpace(n, DEPTH_PARAM_SPACE[n].lo), r = toSpace(n, DEPTH_PARAM_SPACE[n].hi) - lo;
+    const strata = lhs.map((p) => Math.min(lhs.length - 1, Math.floor(((toSpace(n, p[n]) - lo) / r) * lhs.length))).sort((x, y) => x - y);
+    assert.deepEqual(strata, lhs.map((_, i) => i), `${n}: every stratum exactly once`);
+  }
+  // log-scaled parameters are sampled in log space: about half the sample is below the geometric mean of the bounds
+  const geo = Math.sqrt(DEPTH_PARAM_SPACE.revertS.lo * DEPTH_PARAM_SPACE.revertS.hi);
+  assert.ok(Math.abs(lhs.filter((p) => p.revertS < geo).length - lhs.length / 2) <= 1, 'log scale: half the draws below the geometric mean');
+  assert.throws(() => generationCandidates(-1, 5), /generation must be a whole number of at least 0/); assert.throws(() => generationCandidates(0, 0), /at least one candidate/);
+  assert.throws(() => generationCandidates(1, 5), /generation 1 needs a parents file/);
+  // clipping and the transformed space round-trip
+  const wild = clipParams({ ...DEFAULT_DEPTH_SIM_PARAMS, revertS: 1e9, stepSd: 1e-9, sweepPrints: 2.4, tradeRateMult: 0 });
+  const near = (x: number, y: number) => Math.abs(x - y) <= 1e-12 * Math.abs(y);
+  assert.ok(near(wild.revertS, DEPTH_PARAM_SPACE.revertS.hi) && wild.revertS <= DEPTH_PARAM_SPACE.revertS.hi, 'clipped to the upper bound, never past it'); assert.ok(near(wild.stepSd, DEPTH_PARAM_SPACE.stepSd.lo) && wild.stepSd >= DEPTH_PARAM_SPACE.stepSd.lo);
+  assert.equal(wild.sweepPrints, 2); assert.ok(near(wild.tradeRateMult, DEPTH_PARAM_SPACE.tradeRateMult.lo) && wild.tradeRateMult >= DEPTH_PARAM_SPACE.tradeRateMult.lo);
+  for (const n of DEPTH_PARAM_NAMES) assert.ok(Math.abs(fromSpace(n, toSpace(n, DEFAULT_DEPTH_SIM_PARAMS[n])) - DEFAULT_DEPTH_SIM_PARAMS[n]) < 1e-9, `${n} round-trips`);
+});
+
+/** A loss with a known best point: the distance to `target` in the sampling space, each parameter by its own range. */
+function bowl(target: DepthSimParams) {
+  return (p: DepthSimParams) => Math.sqrt(DEPTH_PARAM_NAMES.reduce((a, n) => a + ((toSpace(n, p[n]) - toSpace(n, target[n])) / (toSpace(n, DEPTH_PARAM_SPACE[n].hi) - toSpace(n, DEPTH_PARAM_SPACE[n].lo))) ** 2, 0));
+}
+
+test('cross-entropy generations: seeded, in bounds, centred on the elite, shrinking, and moving toward a better loss', () => {
+  const target = clipParams(Object.fromEntries(DEPTH_PARAM_NAMES.map((n) => [n, fromSpace(n, (toSpace(n, DEPTH_PARAM_SPACE[n].lo) + 2 * toSpace(n, DEPTH_PARAM_SPACE[n].hi)) / 3)])) as unknown as DepthSimParams);
+  const loss = bowl(target), pop = 60;
+  const judged = (cs: DepthSimParams[]) => cs.map((params) => ({ params, loss: loss(params) }));
+  let parents = judged(generationCandidates(0, pop));
+  const best0 = Math.min(...parents.map((p) => p.loss)), median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  const med0 = median(parents.map((p) => p.loss));
+  // one step: deterministic, a different population from the previous generation's, every parameter inside its bounds
+  const g1 = generationCandidates(1, pop, parents), again = generationCandidates(1, pop, parents);
+  assert.deepEqual(g1, again); assert.notDeepEqual(g1, generationCandidates(2, pop, parents), 'another generation is another draw');
+  assert.equal(g1.length, pop);
+  for (const p of g1) for (const n of DEPTH_PARAM_NAMES) { const s = DEPTH_PARAM_SPACE[n]; assert.ok(p[n] >= s.lo && p[n] <= s.hi, `${n} ${p[n]}`); if (s.int) assert.equal(p[n], Math.round(p[n])); }
+  // candidate 0 is the elite's mean (in the sampling space); the elite is the best 20 percent
+  const elite = eliteOf(parents), st = eliteStats(elite);
+  assert.equal(elite.length, Math.ceil(0.2 * pop)); assert.ok(elite.every((e) => e.loss <= median(parents.map((p) => p.loss))));
+  assert.ok(Math.max(...elite.map((e) => e.loss)) <= [...parents].sort((x, y) => x.loss - y.loss)[elite.length - 1].loss + 1e-12);
+  for (const n of DEPTH_PARAM_NAMES) assert.ok(Math.abs(toSpace(n, g1[0][n]) - st.mean[n]) <= (DEPTH_PARAM_SPACE[n].int ? 0.5 : 1e-9), `${n}: candidate 0 is the elite mean`);
+  // the draws move toward the elite: closer to the elite mean than the first generation's sample was
+  const centre = g1[0], spread = (cs: DepthSimParams[]) => cs.reduce((a, p) => a + DEPTH_PARAM_NAMES.reduce((s, n) => s + ((toSpace(n, p[n]) - toSpace(n, centre[n])) / (toSpace(n, DEPTH_PARAM_SPACE[n].hi) - toSpace(n, DEPTH_PARAM_SPACE[n].lo))) ** 2, 0), 0) / cs.length;
+  assert.ok(spread(g1) < 0.5 * spread(generationCandidates(0, pop)), `generation 1 sits closer to the elite mean (${spread(g1).toFixed(3)} against ${spread(generationCandidates(0, pop)).toFixed(3)})`);
+  assert.ok(loss(g1[0]) < med0, 'the elite mean beats the median of the first sample');
+  // four steps: the median loss falls each time and the best ends below where the sample started
+  let prevMed = med0; let best = best0;
+  for (let g = 1; g <= 4; g++) {
+    const cs = generationCandidates(g, pop, parents); parents = judged(cs);
+    const m = median(parents.map((p) => p.loss)); assert.ok(m < prevMed, `generation ${g}: median loss ${m.toFixed(4)} below ${prevMed.toFixed(4)}`); prevMed = m;
+    best = Math.min(best, ...parents.map((p) => p.loss));
+  }
+  assert.ok(best < 0.7 * best0, `the best loss fell from ${best0.toFixed(4)} to ${best.toFixed(4)}`);
+  // an elite.json's entries are used whole (frac 1); the same parents as a plain list are cut to their best 20 percent
+  assert.deepEqual(generationCandidates(1, 10, elite, 1), generationCandidates(1, 10, elite, 1));
+  assert.notDeepEqual(generationCandidates(1, 10, parents, 1), generationCandidates(1, 10, parents));
+});
+
+test('a generation whose elite agrees does not collapse to a point, and a lone parent or no judged parent is handled', () => {
+  const same = { params: { ...DEFAULT_DEPTH_SIM_PARAMS }, loss: 0.6 };
+  const g = cemStep([same, { ...same, loss: 0.61 }, { ...same, loss: 0.9 }], 30, 7, 0.7);
+  for (const n of DEPTH_PARAM_NAMES) assert.ok(Math.abs(g[0][n] - DEFAULT_DEPTH_SIM_PARAMS[n]) <= 1e-9 * DEFAULT_DEPTH_SIM_PARAMS[n], `${n}: candidate 0 is the elite mean (the defaults, all parents agree)`);
+  for (const n of DEPTH_PARAM_NAMES.filter((k) => !DEPTH_PARAM_SPACE[k].int)) {
+    const r = toSpace(n, DEPTH_PARAM_SPACE[n].hi) - toSpace(n, DEPTH_PARAM_SPACE[n].lo), xs = g.slice(1).map((p) => toSpace(n, p[n]));
+    const m = xs.reduce((a, b) => a + b, 0) / xs.length, sd = Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length);
+    assert.ok(sd > 0.5 * CEM_SD_FLOOR * r, `${n}: the draws keep a spread of the floor (${(sd / r).toFixed(4)} of the range)`);
+  }
+  assert.equal(cemStep([same], 3, 1, 1).length, 3, 'one judged parent still gives a generation');
+  assert.throws(() => cemStep([{ params: {}, loss: NaN }], 3, 1), /no judged candidate/);
+  // unjudged (NaN) and 1-loss parents: the finite ones rank first
+  assert.deepEqual(eliteOf([{ loss: NaN, id: 1 }, { loss: 0.7, id: 2 }, { loss: 0.6, id: 3 }, { loss: 1, id: 4 }, { loss: 0.8, id: 5 }], 0.4).map((x) => x.id), [3, 2]);
+});
+
+test('the shard split covers every candidate exactly once, in order, and shards differ by at most one', () => {
+  for (const total of [1, 2, 7, 8, 13, 56, 70, 100, 3500]) for (let k = 1; k <= 7; k++) {
+    const seen: number[] = [], sizes: number[] = [];
+    for (let i = 0; i < k; i++) { const [lo, hi] = shardRange(total, k, i); assert.ok(lo <= hi); for (let c = lo; c < hi; c++) seen.push(c); sizes.push(hi - lo); }
+    assert.deepEqual(seen, Array.from({ length: total }, (_, c) => c), `${total} candidates over ${k} shards`);
+    assert.ok(Math.max(...sizes) - Math.min(...sizes) <= 1);
+  }
+  for (let k = 1; k <= 7; k++) for (const per of [1, 3, 10, 500]) for (let i = 0; i < k; i++) assert.deepEqual(shardRange(k * per, k, i), [i * per, (i + 1) * per], 'the workflow\'s population is shards x per-shard: each shard holds exactly its own per-shard block');
+  assert.deepEqual(parseShard('0/7'), { shard: 0, shards: 7 }); assert.deepEqual(parseShard(' 6/7 '), { shard: 6, shards: 7 });
+  for (const bad of ['7/7', '1', 'a/b', '0/0', '-1/3', '1/2/3', '']) assert.throws(() => parseShard(bad), /--shard must look like|not in 0\.\.|whole number of at least 1/, bad);
+  assert.throws(() => shardRange(10, 0, 0), /whole number of at least 1/); assert.throws(() => shardRange(10, 3, 3), /not in 0\.\.2/); assert.throws(() => shardRange(10, 2.5, 0), /whole number/);
+});
+
+test('parents and params files are checked: known names, finite losses, a sweep best.json made on the FIT days only', async () => {
+  // parentsFrom: a plain list (the best 20 percent is the elite) or an elite.json (used whole)
+  const ok = { params: { revertS: 12 }, loss: 0.7 };
+  assert.equal(parentsFrom([ok, ok]).frac, 0.2); assert.equal(parentsFrom({ kind: 'sweep-elite', elite: [ok] }).frac, 1);
+  assert.deepEqual(parentsFrom([ok]).parents[0].params, { ...DEFAULT_DEPTH_SIM_PARAMS, revertS: 12 }, 'a partial block is merged over the defaults');
+  for (const [bad, want] of [
+    [[], /holds no candidates/], [{}, /holds no candidates/], [null, /holds no candidates/], [[{ params: { revertS: 12 } }], /entry 0 has no params and numeric loss/], [[{ loss: 0.5 }], /entry 0/],
+    [[{ params: { revertz: 12 }, loss: 0.5 }], /unknown/i], [[{ params: { revertS: -3 }, loss: 0.5 }], /revertS/], [[{ params: { revertS: NaN }, loss: 0.5 }], /revertS/], [[ok, { params: {}, loss: '0.5' }], /entry 1/],
+  ] as Array<[unknown, RegExp]>) assert.throws(() => parentsFrom(bad), want, JSON.stringify(bad));
+  // loadDepthParamsFile
+  const fx = await sweepFixture(), best = JSON.parse(fs.readFileSync(path.join(fx.collected, 'best.json'), 'utf8'));
+  const dir = tmpDir(), put = (j: unknown, raw?: string) => { const f = path.join(dir, `p${fs.readdirSync(dir).length}.json`); fs.writeFileSync(f, raw ?? JSON.stringify(j)); return f; };
+  const good = loadDepthParamsFile(path.join(fx.collected, 'best.json'));
+  assert.deepEqual(good.params, best.params); assert.equal(good.gen, 0); assert.equal(good.loss, best.loss); assert.deepEqual(good.fitDays, FIT_DAYS);
+  for (const [mod, want] of [
+    [{ kind: 'sweep-elite' }, /is not a sweep-1 sweep best\.json/], [{ version: 'sweep-0' }, /is not a sweep-1 sweep best\.json/], [{ split: 'confirm' }, /was not made on the dev split/], [{ split: 'custom' }, /was not made on the dev split/],
+    [{ fitDays: [...FIT_DAYS, '2026-11-13'] }, /overlap.*2026-11-13/], [{ fitDays: ['2026-11-11', '2026-11-18'] }, /confirm days/], [{ fitDays: ['2026-11-11'] }, /at least 2 fit days/], [{ fitDays: 'x' }, /needs --fit-days/],
+    [{ params: undefined }, /no params and loss/], [{ loss: 'x' }, /no params and loss/], [{ params: { ...best.params, nope: 1 } }, /unknown/i], [{ params: { ...best.params, revertS: 0 } }, /revertS/], [{ params: { ...best.params, stepSd: -1 } }, /stepSd/],
+  ] as Array<[Record<string, unknown>, RegExp]>) assert.throws(() => loadDepthParamsFile(put({ ...best, ...mod })), want, JSON.stringify(mod));
+  assert.throws(() => loadDepthParamsFile(put(null, 'not json')), /not readable JSON/); assert.throws(() => loadDepthParamsFile(path.join(dir, 'missing.json')), /not readable JSON/);
+});
+
+// A small synthetic world for the stage tests: three FIT days of requote records, the same days filled in with the DEFAULT parameters
+// as the "real" days (so candidate 0, the defaults, must score exactly 0.5), a depth model that records the FIT days, 2 shards x 3
+// candidates of generation 0 judged and merged. Built once, on first use.
+interface SweepFixture { root: string; twin: string; real: string; modelFile: string; shardsDir: string; collected: string; shards: number; per: number; opts: Parameters<typeof runSweep>[0] }
+let fixtureOnce: Promise<SweepFixture> | undefined;
+const sweepFixture = (): Promise<SweepFixture> => (fixtureOnce ??= buildSweepFixture());
+async function buildSweepFixture(): Promise<SweepFixture> {
+  const root = tmpDir(), twin = path.join(root, 'twin'), real = path.join(root, 'real'), shardsDir = path.join(root, 'shards'), collected = path.join(root, 'collected');
+  for (const d of [twin, real]) fs.mkdirSync(d);
+  const modelFile = path.join(root, 'depth_model.json');
+  fs.writeFileSync(modelFile, JSON.stringify(synthModel({ days: FIT_DAYS })));
+  const model = readDepthModel(modelFile)!;
+  for (const [i, d] of FIT_DAYS.entries()) {
+    writeEventsGz(path.join(twin, `md-${d}.jsonl.gz`), synthRequoteDay({ day: d, assets: ['BTC', 'ETH', 'SOL'], windows: 3, seed: 10 + i }));
+    await fillDayFile(path.join(twin, `md-${d}.jsonl.gz`), path.join(real, `md-${d}.jsonl.gz`), { how: 'depth' }, model);
+    fs.writeFileSync(path.join(real, `meta-${d}.json`), JSON.stringify({ day: d, version: real15mTag(), bytes: fs.statSync(path.join(real, `md-${d}.jsonl.gz`)).size }));
+  }
+  const opts = { split: 'dev', fitDays: FIT_DAYS.join(','), twinDir: twin, realDir: real, modelFile, gen: 0, shard: 0, shards: 2, perShard: 3, out: shardsDir, log: () => {} };
+  for (const shard of [0, 1]) await runSweep({ ...opts, shard });
+  const r = spawnSync(process.execPath, ['--import', 'tsx', 'research/historyTwin.ts', '--stage', 'sweep-collect', '--dir', shardsDir, '--gen', '0', '--shards', '2', '--candidates', '3', '--out', collected], { encoding: 'utf8' });
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  return { root, twin, real, modelFile, shardsDir, collected, shards: 2, per: 3, opts };
+}
+const readJson = (f: string) => JSON.parse(fs.readFileSync(f, 'utf8'));
+const noSeconds = (rs: Array<Record<string, any>>) => rs.map(({ seconds: _s, ...x }) => x);
+
+test('a sweep refuses a FIT day whose requote tickers match no real lives (or only a few): a flat 0.5 for every candidate is never collected', async () => {
+  // three FIT days of 15 requote contracts each (3 assets x 5 windows); the real day of `bad` is made from other contracts or from fewer of them
+  const world = async (bad: string, realOf: Partial<Parameters<typeof synthRequoteDay>[0]> | undefined) => {
+    const root = tmpDir(), twin = path.join(root, 'twin'), real = path.join(root, 'real'), out = path.join(root, 'out');
+    for (const d of [twin, real]) fs.mkdirSync(d);
+    const modelFile = path.join(root, 'depth_model.json');
+    fs.writeFileSync(modelFile, JSON.stringify(synthModel({ days: FIT_DAYS })));
+    const model = readDepthModel(modelFile)!;
+    for (const [i, d] of FIT_DAYS.entries()) {
+      const spec = { day: d, assets: ['BTC', 'ETH', 'SOL'], windows: 5, seed: 20 + i };
+      writeEventsGz(path.join(twin, `md-${d}.jsonl.gz`), synthRequoteDay(spec));
+      const src = d === bad && realOf ? path.join(root, `other-${d}.jsonl.gz`) : path.join(twin, `md-${d}.jsonl.gz`);
+      if (d === bad && realOf) writeEventsGz(src, synthRequoteDay({ ...spec, ...realOf }));
+      await fillDayFile(src, path.join(real, `md-${d}.jsonl.gz`), { how: 'depth' }, model);
+      fs.writeFileSync(path.join(real, `meta-${d}.json`), JSON.stringify({ day: d, version: real15mTag(), bytes: fs.statSync(path.join(real, `md-${d}.jsonl.gz`)).size }));
+    }
+    return { split: 'dev', fitDays: FIT_DAYS.join(','), twinDir: twin, realDir: real, modelFile, gen: 0, shard: 0, shards: 1, perShard: 2, out, log: () => {} } as Parameters<typeof runSweep>[0];
+  };
+  // control: every real day made from its own requote day is judged (candidate 0 = the defaults on days the defaults made: exactly 0.5, by the real folds)
+  const ok = await runSweep(await world('', undefined));
+  assert.equal(ok.complete, true); assert.equal(ok.results[0].loss, 0.5); assert.equal(ok.results[0].realRows, 45);
+  // a real day with none of the requote day's contracts: 30 lives are left in all (above the pooled floor of 20), so only the per-day guard sees it
+  const none = await world('2026-11-12', { assets: ['XRP', 'LTC', 'ADA'] });
+  await assert.rejects(runSweep(none), /the real FIT day\(s\) 2026-11-12 \(0 lives\) hold fewer than 5 contract lives that the requote day also has.*tickers do not match.*every candidate would read AUC 0\.5/);
+  assert.ok(!fs.existsSync(none.out), 'nothing was written for the refused sweep');
+  // a real day with only 3 of its 15 contracts, and two such days named together
+  const thin = await world('2026-11-15', { windows: 1 });
+  await assert.rejects(runSweep(thin), /the real FIT day\(s\) 2026-11-15 \(3 lives\) hold fewer than 5/);
+  assert.ok(MIN_DAY_LIVES === 5, 'the floor the messages and the tests name');
+});
+
+test('a synthetic sweep end to end: shards judged on the FIT days, the defaults score 0.5 on a day they made, merged, the next generation, a rerun', async () => {
+  const fx = await sweepFixture();
+  const cands = generationCandidates(0, 6);
+  const shardFiles: SweepShardFile[] = [0, 1].map((s) => readJson(path.join(fx.shardsDir, sweepShardName(0, s, 2))));
+  for (const [s, f] of shardFiles.entries()) {
+    assert.equal(f.kind, 'sweep-shard'); assert.equal(f.version, SWEEP_VERSION); assert.equal(f.complete, true); assert.equal(f.population, 6);
+    assert.deepEqual(f.fitDays, FIT_DAYS); assert.deepEqual(f.modelDays, FIT_DAYS, 'the shard records the days its depth model was fitted on');
+    assert.deepEqual(f.results.map((r) => r.index), [3 * s, 3 * s + 1, 3 * s + 2], 'a shard judges its own slice');
+    for (const r of f.results) {
+      assert.deepEqual(r.params, cands[r.index], `candidate ${r.index} is the generation's candidate ${r.index}`);
+      assert.equal(r.realRows, 27); assert.equal(r.twinRows, 27); assert.deepEqual(Object.keys(r.features), [...FEATURES]); assert.equal(r.top3.length, 3);
+      assert.ok(r.loss >= 0 && r.loss <= 1 && Number.isFinite(r.seconds));
+    }
+    assert.ok(!/KX[A-Z]+15M|KXBTC|T\d{2}:\d{2}/.test(JSON.stringify(f)), 'a shard file holds numbers and parameter names, no ticker');
+  }
+  const all = shardFiles.flatMap((f) => f.results);
+  assert.equal(all.find((r) => r.index === 0)!.loss, 0.5, 'the defaults on days the defaults made: nothing to tell');
+  for (const r of all.filter((x) => x.index > 0)) assert.ok(r.loss > 0.6, `candidate ${r.index}: ${r.loss}`);
+  // the merge: best.json, elite.json, results.json
+  const best = readJson(path.join(fx.collected, 'best.json')), elite = readJson(path.join(fx.collected, 'elite.json')), results = readJson(path.join(fx.collected, 'results.json'));
+  assert.equal(best.kind, 'sweep-best'); assert.equal(best.index, 0); assert.equal(best.loss, 0.5); assert.deepEqual(best.params, { ...DEFAULT_DEPTH_SIM_PARAMS }); assert.equal(best.defaultLoss, 0.5);
+  assert.equal(best.split, 'dev'); assert.deepEqual(best.fitDays, FIT_DAYS); assert.equal(best.evaluated, 6); assert.equal(best.gen, 0);
+  assert.equal(elite.kind, 'sweep-elite'); assert.equal(elite.elite.length, 2); assert.deepEqual(elite.elite.map((e: { index: number }) => e.index), rankResults(all).slice(0, 2).map((r) => r.index));
+  assert.deepEqual(results.results.map((r: { index: number }) => r.index), rankResults(all).map((r) => r.index));
+  for (const f of ['best.json', 'elite.json', 'results.json']) assert.ok(fs.statSync(path.join(fx.collected, f)).size < 20_000, `${f} is small`);
+  // the same shard again: the same numbers (only the clock differs)
+  const rerun = await runSweep({ ...fx.opts, shard: 0, out: tmpDir() });
+  assert.deepEqual(noSeconds(rerun.results as any), noSeconds(shardFiles[0].results as any), 'a rerun gives the same results, candidate by candidate');
+  // generation 1 from the elite: the cross-entropy step, the slice of its shard, parents read as the whole elite
+  const logs: string[] = [];
+  const g1 = await runSweep({ ...fx.opts, gen: 1, shard: 1, parentsFile: path.join(fx.collected, 'elite.json'), out: tmpDir(), log: (l) => logs.push(l) });
+  const want = generationCandidates(1, 6, parentsFrom(elite).parents, 1);
+  assert.deepEqual(g1.results.map((r) => r.params), want.slice(3, 6)); assert.deepEqual(g1.results.map((r) => r.index), [3, 4, 5]); assert.equal(g1.gen, 1);
+  assert.ok(logs.some((l) => /^\[twin\] sweep g1 shard 1\/2: candidates 3\.\.5 of 6 \(3 here\), 3 FIT day\(s\), 27 real lives/.test(l)));
+  assert.ok(logs.every((l) => !/KX[A-Z]/.test(l)), 'the log carries numbers only');
+  // generation 0 with a parents file ignores it, and says so
+  const l0: string[] = []; await runSweep({ ...fx.opts, shard: 0, perShard: 1, shards: 1, parentsFile: path.join(fx.collected, 'elite.json'), out: tmpDir(), log: (l) => l0.push(l) });
+  assert.ok(l0.some((l) => /generation 0 takes no parents/.test(l)));
+});
+
+test('a shard that ran out of time is kept as incomplete, and the merge refuses an incomplete, missing, mixed or mis-sliced generation', async () => {
+  const fx = await sweepFixture();
+  const cut = await runSweep({ ...fx.opts, shard: 0, budgetMin: 0, out: tmpDir(), log: () => {} });
+  assert.equal(cut.complete, false); assert.deepEqual(cut.results, []);
+  const dir = tmpDir(), put = (name: string, j: unknown) => fs.writeFileSync(path.join(dir, name), JSON.stringify(j));
+  const s0: SweepShardFile = readJson(path.join(fx.shardsDir, sweepShardName(0, 0, 2))), s1: SweepShardFile = readJson(path.join(fx.shardsDir, sweepShardName(0, 1, 2)));
+  const collect = (partial = false) => collectSweep(dir, { gen: 0, shards: 2, perShard: 3, partial });
+  assert.throws(() => collect(), /no shard file for generation 0/);
+  put(sweepShardName(0, 0, 2), s0);
+  // a shard with no file: the refusal names the candidates and the shard, and what to do (a red job re-runs under its run id; a partial collect is a dispatch input of the run that runs the shards, never a re-collect)
+  assert.throws(() => collect(), /3 of 6 candidates are missing \(3, 4, 5\); no result file for shard 1: a red shard job \(crashed, timed out\): gh run rerun RUN --failed\. A green but incomplete shard \(budget stop\): a re-run fails the same way; dispatch again with fewer sweep_candidates, or with sweep_partial=true on that dispatch \(a finished run cannot be re-collected as partial\)/);
+  try { collect(); assert.fail('refused'); } catch (e) { const first = String((e as Error).message).split('\n')[0]; assert.ok(`[twin] ERROR: ${first}`.length <= 400, `the whole reason fits the 400 characters a commit comment keeps (${first.length})`); assert.ok(!/or collect it with partial|re-dispatch/.test(first), 'no advice that reads as a post-hoc collect'); }
+  const part = collect(true); assert.match(part.lines[0], /3 of 6 candidates judged by 1 shard\(s\) \(3 missing: partial\)/); assert.equal((part.best as any).evaluated, 3);
+  assert.ok(part.lines.includes('[twin] sweep g0: shard 1 has no result file (its job failed before its first candidate)'), 'a partial collect lists the shard with no file');
+  put(sweepShardName(0, 1, 2), { ...s1, complete: false, results: s1.results.slice(0, 2) });
+  assert.throws(() => collect(), /shard 1 is not complete \(2 of 3 candidates\): a red shard job .*gh run rerun RUN --failed.*sweep_partial=true on that dispatch/);
+  const part2 = collect(true); assert.equal((part2.results as any).results.length, 5);
+  assert.ok(part2.lines.includes('[twin] sweep g0: shard 1 incomplete: 2 of 3 candidates judged (it stopped at its budget, or its job failed)'), 'a partial collect lists the incomplete shard (a green job that stopped at its budget is one)');
+  assert.ok(!part2.lines.some((l) => /has no result file/.test(l)), 'a shard with a file is not "no file"');
+  put(sweepShardName(0, 1, 2), cut); // an empty incomplete shard beside a whole one
+  assert.throws(() => collect(), /shard 0 is not complete \(0 of 3 candidates\)/);
+  put(sweepShardName(0, 1, 2), s1);
+  const whole = collect(); assert.match(whole.lines[0], /^\[twin\] sweep g0: 6 of 6 candidates judged by 2 shard\(s\); best loss 0\.5000 \(c0\)/); assert.match(whole.lines[1], /the defaults \(c0\) score 0\.5000; no candidate beat them/);
+  assert.equal(whole.lines.filter((l) => /^\[twin\] sweep top \d: c\d+ loss/.test(l)).length, 5, 'the top 5 are printed');
+  // the exact best parameters, every digit, on one line: what a promotion to the code defaults pastes (the 4-digit lines are for reading)
+  put(sweepShardName(0, 1, 2), { ...s1, results: s1.results.map((r) => (r.index === 4 ? { ...r, loss: 0.1 } : r)) });
+  const win = collect(), exactLines = win.lines.filter((l) => l.startsWith('[twin] sweep best params exact'));
+  assert.equal(exactLines.length, 1, 'one line');
+  const em = /^\[twin\] sweep best params exact \(g0 c4, loss 0\.1000\): (\{.*\})$/.exec(exactLines[0]);
+  assert.ok(em, exactLines[0]);
+  const exactParams = JSON.parse(em![1]), winner = (win.best as { params: DepthSimParams }).params;
+  assert.deepEqual(exactParams, winner, 'to the last digit: the JSON reads back as the very same numbers');
+  assert.deepEqual(exactParams, generationCandidates(0, 6)[4], 'and they are candidate 4\'s');
+  assert.deepEqual(resolveDepthSimParams(exactParams), winner, 'a valid parameter set, as the code defaults would hold it');
+  assert.ok(DEPTH_PARAM_NAMES.some((n) => describeParams(winner).includes(`${n} ${+winner[n].toPrecision(4)}`) && +winner[n].toPrecision(4) !== winner[n]), 'the 4-digit lines round it: that is why the exact line exists');
+  assert.ok(Object.keys(exactParams).length === DEPTH_PARAM_NAMES.length && !/KX[A-Z]|\$/.test(exactLines[0]), 'all 13, names and numbers only');
+  put(sweepShardName(0, 1, 2), s1);
+  // numbers and parameter names only
+  assert.ok(whole.lines.every((l) => /^\[twin\] sweep/.test(l) && !/KX[A-Z]|\$/.test(l)));
+  // mixed generations, fit days, models, slices
+  assert.throws(() => collectSweep(dir, { gen: 0, shards: 3, perShard: 3 }), /no shard file for generation 0/, 'another shard count finds no file of that name');
+  assert.throws(() => collectSweep(dir, { gen: 1, shards: 2, perShard: 3 }), /no shard file for generation 1/, 'nor does another generation');
+  put(sweepShardName(0, 1, 2), { ...s1, fitDays: ['2026-11-11', '2026-11-12'] });
+  assert.throws(() => collect(), /different fit days or depth models/);
+  for (const [mod, want] of [
+    [{ fitDays: [...FIT_DAYS, '2026-11-13'], }, /overlap.*2026-11-13/], [{ modelDays: [...FIT_DAYS, '2026-11-14'] }, /overlap.*2026-11-14/], [{ modelDays: ['2026-11-11', '2026-11-10'] }, /outside the fit set: 2026-11-10/], [{ modelDays: [] }, /does not record the days/],
+    [{ version: 'sweep-0' }, /is not a sweep-1 shard/], [{ kind: 'sweep-best' }, /is not a sweep-1 shard/], [{ perShard: 4 }, /is not generation 0/],
+  ] as Array<[Partial<SweepShardFile>, RegExp]>) { put(sweepShardName(0, 0, 2), { ...s0, ...mod }); put(sweepShardName(0, 1, 2), { ...s1, ...mod }); assert.throws(() => collect(), want, JSON.stringify(mod)); }
+  put(sweepShardName(0, 0, 2), s0); put(sweepShardName(0, 1, 2), { ...s1, shard: 0 }); // a file that claims another shard's slice
+  assert.throws(() => collect(), /candidate 3 \(generation 0\) does not belong to shard 0 of generation 0/);
+  put(sweepShardName(0, 1, 2), { ...s1, results: s1.results.map((r) => ({ ...r, gen: 1 })) });
+  assert.throws(() => collect(), /does not belong to shard 1 of generation 0/);
+  put(sweepShardName(0, 1, 2), { ...s1, results: [...s1.results, s0.results[0]] });
+  assert.throws(() => collect(), /candidate 0 \(generation 0\) does not belong to shard 1 of generation 0/);
+  // two files covering the same candidates: the merge names it
+  assert.throws(() => mergeShards([s0, { ...s1, shard: 0 }], { gen: 0, shards: 2, perShard: 3 }), /does not belong to shard 0/);
+  assert.throws(() => mergeShards([s0, s0], { gen: 0, shards: 2, perShard: 3 }), /appears twice/);
+});
+
+test('the depth fill-in takes a sweep\'s best.json (--depth-params), logs every parameter it used, and refuses it where it must', async () => {
+  const fx = await sweepFixture(), work = tmpDir();
+  const day = '2026-11-13', src = path.join(work, 'src'); fs.mkdirSync(src);
+  writeEventsGz(path.join(src, `md-${day}.jsonl.gz`), synthRequoteDay({ day, assets: ['BTC', 'ETH'], windows: 3, seed: 5 }));
+  const cand = generationCandidates(0, 6)[2];
+  const best = { ...readJson(path.join(fx.collected, 'best.json')), index: 2, loss: 0.9, params: cand };
+  const bestFile = path.join(work, 'best.json'); fs.writeFileSync(bestFile, JSON.stringify(best));
+  const fill = (dst: string, ...a: string[]) => spawnSync(process.execPath, ['--import', 'tsx', 'research/historyTwin.ts', '--stage', 'fill', '--src', src, '--dst', path.join(work, dst), '--how', 'depth', '--depth-model', fx.modelFile, ...a], { encoding: 'utf8' });
+  const plain = fill('plain'), tuned = fill('tuned', '--depth-params', bestFile);
+  assert.equal(plain.status, 0, plain.stderr); assert.equal(tuned.status, 0, tuned.stderr);
+  // the defaults as the code has them (read from DEFAULT_DEPTH_SIM_PARAMS, not spelled out: a promotion of a sweep's winners changes them)
+  assert.ok(plain.stdout.split('\n').includes(`[twin] depth simulator parameters (defaults, as in the code): ${describeParams(DEFAULT_DEPTH_SIM_PARAMS)}`), plain.stdout);
+  assert.equal(describeParams(DEFAULT_DEPTH_SIM_PARAMS).split(', ').length, DEPTH_PARAM_NAMES.length, 'all of them, one name each');
+  const used = /\[twin\] depth simulator parameters \(sweep best, generation 0, loss 0\.9, fitted on FIT days only\): (.*)/.exec(tuned.stdout);
+  assert.ok(used, tuned.stdout); assert.equal(used![1], describeParams(cand), 'the log names every parameter and the value used');
+  assert.equal(used![1].split(', ').length, DEPTH_PARAM_NAMES.length);
+  const name = `md-${day}.jsonl.gz`, lines = (d: string) => gunzipLines(path.join(work, d, name));
+  assert.notDeepEqual(lines('tuned'), lines('plain'), 'the sweep\'s parameters move the filled day');
+  const model = readDepthModel(fx.modelFile)!;
+  await fillDayFile(path.join(src, name), path.join(work, 'inproc.jsonl.gz'), { how: 'depth' }, model, cand);
+  assert.deepEqual(lines('tuned'), gunzipLines(path.join(work, 'inproc.jsonl.gz')), 'the stage fills in as the library does with those params');
+  // a split on record: dev takes them; a confirm split and a split that judges a day the sweep fitted on do not
+  const split = (sp: object) => { const f = path.join(work, `split-${fs.readdirSync(work).length}.json`); fs.writeFileSync(f, JSON.stringify(sp)); return f; };
+  const dev = fill('dev', '--depth-params', bestFile, '--split-file', split({ name: 'dev', fit: FIT_DAYS, judge: DEV_JUDGED, warm: [] }));
+  assert.equal(dev.status, 0, dev.stderr); assert.match(dev.stdout, /depth model fitted on fit days only/);
+  const conf = fill('c', '--depth-params', bestFile, '--split-file', split({ name: 'confirm', fit: [...SPLITS.confirm.fit], judge: [...SPLITS.confirm.judge], warm: [] }));
+  assert.notEqual(conf.status, 0); assert.match(conf.stderr, /^\[twin\] ERROR: depth_params_run is for dev and custom dispatches: the confirm run uses the code defaults/m);
+  assert.equal(fill('c2', '--split-file', split({ name: 'confirm', fit: [...SPLITS.confirm.fit], judge: [...SPLITS.confirm.judge], warm: [] })).status, 0, 'a confirm fill-in without sweep params is the usual one');
+  const small = path.join(work, 'small_model.json'); fs.writeFileSync(small, JSON.stringify(synthModel({ days: ['2026-11-11', '2026-11-12'] })));
+  const leak = spawnSync(process.execPath, ['--import', 'tsx', 'research/historyTwin.ts', '--stage', 'fill', '--src', src, '--dst', path.join(work, 'l'), '--how', 'depth', '--depth-model', small, '--depth-params', bestFile, '--split-file', split({ name: 'custom', fit: ['2026-11-11', '2026-11-12'], judge: ['2026-11-15', '2026-11-13'], warm: [] })], { encoding: 'utf8' });
+  assert.notEqual(leak.status, 0); assert.match(leak.stderr, /fit days and judged days overlap.*2026-11-15/, 'params fitted on 11-15 do not go to a split that judges it');
+  // a file that is not a sweep's best, or was made on days outside the FIT days
+  for (const [mod, want] of [[{ kind: 'sweep-elite' }, /is not a sweep-1 sweep best\.json/], [{ fitDays: [...FIT_DAYS, '2026-11-13'] }, /overlap.*2026-11-13/], [{ split: 'confirm' }, /was not made on the dev split/], [{ params: { ...cand, bogus: 1 } }, /unknown/i]] as Array<[object, RegExp]>) {
+    const bad = fill('bad', '--depth-params', split({ ...best, ...mod })); assert.notEqual(bad.status, 0); assert.match(bad.stderr, new RegExp(`^\\[twin\\] ERROR: .*${want.source}`, 'm'), JSON.stringify(mod));
+  }
+  // a model with its own params block: logged as such, and a sweep's params go over it
+  const blockModel = path.join(work, 'block_model.json'); fs.writeFileSync(blockModel, JSON.stringify({ ...synthModel({ days: FIT_DAYS }), params: { revertS: 25 } }));
+  const own = spawnSync(process.execPath, ['--import', 'tsx', 'research/historyTwin.ts', '--stage', 'fill', '--src', src, '--dst', path.join(work, 'own'), '--how', 'depth', '--depth-model', blockModel], { encoding: 'utf8' });
+  assert.match(own.stdout, /parameters \(the model's own params block\): revertS 25, /);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The workflow's sweep jobs (sweep-plan, sweep, sweep-collect) and depth_params_run: the text held to the code's FIT days, and the
+// jobs' own steps run with stubbed Drive, gh and node.
+
+const jobText = (y: string, name: string): string => { const lines = y.split('\n'), at = lines.indexOf(`  ${name}:`); assert.ok(at >= 0, `job ${name}`); const end = lines.findIndex((l, i) => i > at && /^  \S/.test(l)); return lines.slice(at, end < 0 ? undefined : end).join('\n'); };
+const stubDrive = (ws: string) => fs.writeFileSync(path.join(ws, 'deploy/drive_lab.sh'), `#!/usr/bin/env bash
+[ -n "\${STUB_CALLS:-}" ] && echo "$*" >> "$STUB_CALLS"
+case "$1" in
+  get) [ -d "$STUB_DRIVE/$2" ] || exit 3; mkdir -p "$3"; cp -r "$STUB_DRIVE/$2/." "$3/";;
+  put) dst="$STUB_DRIVE/$2"; src="$3"; shift 3; mkdir -p "$dst"
+       while [ $# -gt 0 ]; do if [ "$1" = --include ]; then for f in "$src"/$2; do [ -f "$f" ] && cp "$f" "$dst/"; done; shift; fi; shift; done;;
+esac
+`, { mode: 0o755 });
+/** A workspace for the steps that run the real stage: the repo's research code and node_modules linked in. */
+function stageWs() { const w = stepWs(); fs.symlinkSync(path.join(ROOT, 'research'), path.join(w.ws, 'research')); fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(w.ws, 'node_modules')); stubDrive(w.ws); stubGh(w.bin); return w; }
+
+test('the sweep jobs are wired as the brief says: dispatch-only, exclusive, 7 wide, 340 minutes, production, one heavy group, FIT days only', () => {
+  const y = wf(), plan = jobText(y, 'sweep-plan'), shard = jobText(y, 'sweep'), collect = jobText(y, 'sweep-collect');
+  assert.match(plan, /if: .*github\.event_name == 'workflow_dispatch' && inputs\.sweep_gen != ''/);
+  assert.match(shard, /needs: sweep-plan/); assert.match(shard, /if: .*needs\.sweep-plan\.result == 'success'/); assert.match(shard, /environment: production/); assert.match(shard, /timeout-minutes: 340\b/);
+  assert.match(shard, /max-parallel: 7\b/); assert.match(shard, /fail-fast: false/); assert.match(shard, /shard: \$\{\{ fromJSON\(needs\.sweep-plan\.outputs\.shards\) \}\}/);
+  assert.match(collect, /needs: \[sweep-plan, sweep\]/); assert.match(collect, /if: .*always\(\) && needs\.sweep-plan\.result == 'success'/); assert.match(collect, /environment: production/); assert.match(collect, /actions: read/);
+  // a sweep dispatch runs none of the other jobs, and they run none of its
+  for (const j of ['prep-plan', 'build', 'reverdict']) assert.match(jobText(y, j), /inputs\.sweep_gen == ''/, `${j} does not run on a sweep dispatch`);
+  assert.match(jobText(y, 'reverdict'), /inputs\.reverdict_run != '' && inputs\.sweep_gen == ''/);
+  // the days of a sweep are the dev FIT days, spelled out once and held to SPLITS; no input can change them, and no DEV or CONFIRM day is named
+  assert.match(shard, new RegExp(`\\n      FIT: ${SPLITS.dev.fit.join(',')}\\n`), 'the FIT env is SPLITS.dev.fit');
+  const all = `${plan}\n${shard}\n${collect}`;
+  for (const d of [...DEV_JUDGED, ...CONFIRM_DAYS]) assert.ok(!all.includes(d), `the sweep jobs do not name ${d}`);
+  assert.ok(!/inputs\.(fit_days|judge_days|warm_day|prep_days|model_drive|lag_arms|backtests|confirm_look_note)/.test(`${shard}\n${collect}`), 'the shards and the collect read no day or split input');
+  assert.match(plan, /SPLIT: \$\{\{ inputs\.split \|\| 'dev' \}\}/);
+  assert.match(shard, /--stage sweep --split dev --fit-days "\$FIT"/); assert.match(shard, /--depth-model data\/models\/depth_model\.json/);
+  assert.ok(!/--stage (match|fill|features|verdict|backtest)/.test(shard), 'a shard runs the sweep stage only: no judged day is matched, filled in or read');
+  assert.ok(!/derived\/twin-real15m"? data|recordings\//.test(shard.replace(/derived\/twin-real15m\/\$d/g, '')), 'the shards read the prepped FIT days, never a raw recording');
+  // Drive is copy only, and the real days are read from the prep's cache
+  assert.ok(!/rclone (sync|move|moveto|delete|deletefile|purge|rmdir|cleanup|rcat)|drive_lab\.sh (rm|delete|purge|sync|move)|--delete|--purge/.test(all), 'no delete, sync or move on Drive');
+  assert.deepEqual([...all.matchAll(/drive_lab\.sh (\w+)/g)].map((m) => m[1]).filter((v, i, a) => a.indexOf(v) === i).sort(), ['get', 'put']);
+  assert.ok(!/upload-artifact|actions\/cache\/save/.test(all), 'no artifact and no cache write: the repository is public');
+  // inputs
+  const ins = y.slice(y.indexOf('workflow_dispatch:'), y.indexOf('\npermissions:'));
+  for (const k of ['sweep_gen', 'sweep_candidates', 'sweep_shards', 'sweep_parents_run', 'sweep_partial', 'depth_params_run']) assert.match(ins, new RegExp(`\\n      ${k}:\\n        description: `), `input ${k} is documented`);
+  assert.ok([...ins.matchAll(/^      [a-z_]+:$/gm)].length <= 25, 'GitHub takes at most 25 dispatch inputs');
+  // the header documents it
+  const head = y.slice(0, y.indexOf('\non:'));
+  for (const w of ['THE SWEEP (sweep_gen', "RUNBOOK 'The depth simulator sweep'", 'FIT days only', 'depth_params_run=RUN', 'sweep_parents_run', 'simulated/history-twin-sweep/RUN', 'best.json, elite.json', 'one concurrency group']) assert.ok(head.includes(w), `the header says: ${w}`);
+  assert.ok(y.includes("group: history-twin-${{ inputs.reverdict_run && 'reverdict' || 'heavy' }}"), 'a sweep is in the heavy group with prep and build');
+});
+
+const hasYaml = spawnSync('python3', ['-c', 'import yaml'], { encoding: 'utf8' }).status === 0;
+test('the workflow is valid YAML and the sweep jobs parse as the text tests read them', { skip: hasYaml ? false : 'python3 with PyYAML is not installed here' }, () => {
+  const r = spawnSync('python3', ['-I', '-c', 'import yaml,json,sys; print(json.dumps(yaml.safe_load(open(sys.argv[1]))))', path.join(ROOT, '.github/workflows/history-twin.yml')], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const d = JSON.parse(r.stdout), on = d.true ?? d.on, jobs = d.jobs as Record<string, any>;
+  assert.deepEqual(Object.keys(jobs), ['prep-plan', 'prep', 'prep-report', 'build', 'backtest', 'verdict', 'reverdict', 'sweep-plan', 'sweep', 'sweep-collect']);
+  assert.equal(jobs.sweep.strategy['max-parallel'], 7); assert.equal(jobs.sweep['timeout-minutes'], 340); assert.equal(jobs.sweep.environment, 'production'); assert.equal(jobs.sweep.needs, 'sweep-plan');
+  assert.match(jobs.sweep.strategy.matrix.shard, /fromJSON\(needs\.sweep-plan\.outputs\.shards\)/); assert.deepEqual(jobs['sweep-collect'].needs, ['sweep-plan', 'sweep']);
+  for (const [n, j] of Object.entries(jobs)) if (j.strategy) assert.ok(j.strategy['max-parallel'] <= 7, `${n} runs at most 7 at once`);
+  assert.deepEqual(Object.keys(jobs['sweep-plan'].outputs), ['gen', 'shards', 'shard_count', 'per', 'parents']);
+  const ins = on.workflow_dispatch.inputs;
+  for (const k of ['sweep_gen', 'sweep_candidates', 'sweep_shards', 'sweep_parents_run', 'sweep_partial', 'depth_params_run']) assert.ok(ins[k]?.description, k);
+  assert.equal(ins.sweep_gen.default, ''); assert.equal(ins.sweep_candidates.default, '8'); assert.equal(ins.sweep_shards.default, '7'); assert.equal(ins.sweep_partial.type, 'boolean'); assert.equal(ins.depth_params_run.default, '');
+  assert.ok(Object.keys(ins).length <= 25);
+  const names = (j: string) => (jobs[j].steps as Array<{ name?: string }>).map((s) => s.name ?? '').filter(Boolean);
+  assert.equal(new Set(names('sweep')).size, names('sweep').length, 'step names are unique within the shard job'); assert.ok(names('sweep').length >= 10);
+  for (const j of ['sweep-plan', 'sweep', 'sweep-collect']) for (const s of jobs[j].steps) assert.ok(!('continue-on-error' in s), 'no step hides its failure');
+});
+
+test('sweep-plan accepts a clean dispatch and refuses every other: a sweep is exclusive, dev only, 1 to 7 shards of 1 to 500, parents from generation 1', () => {
+  const y = wf(), { ws, tmp } = stageWs();
+  const plan = (env: Record<string, string>) => {
+    const gh = path.join(tmp, 'gh_out'); fs.writeFileSync(gh, ''); fs.rmSync(path.join(tmp, 'plan.log'), { force: true });
+    const r = bash(stepScript(y, 'Which generation'), { SWEEP_GEN: '0', CANDIDATES: '8', SHARDS: '7', PARENTS_RUN: '', PREP_DAYS: '', REVERDICT_RUN: '', SPLIT: 'dev', DEPTH_PARAMS_RUN: '', GITHUB_OUTPUT: gh, RUNNER_TEMP: tmp, ...env }, ws);
+    const log = fs.existsSync(path.join(tmp, 'plan.log')) ? fs.readFileSync(path.join(tmp, 'plan.log'), 'utf8') : '';
+    return { ok: r.status === 0, out: Object.fromEntries(fs.readFileSync(gh, 'utf8').split('\n').filter(Boolean).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)])), log, text: `${r.stdout}${r.stderr}` };
+  };
+  const g0 = plan({});
+  assert.ok(g0.ok, g0.text); assert.deepEqual(g0.out, { gen: '0', per: '8', shard_count: '7', parents: '', shards: '[0,1,2,3,4,5,6]' });
+  assert.match(g0.text, /\[twin\] sweep plan: generation 0, 7 shard\(s\) x 8 candidate\(s\) = 56 candidate\(s\) on the FIT days only\n/);
+  const g3 = plan({ SWEEP_GEN: '03', CANDIDATES: '010', SHARDS: '3', PARENTS_RUN: '123456' });
+  assert.ok(g3.ok, g3.text); assert.deepEqual(g3.out, { gen: '3', per: '10', shard_count: '3', parents: '123456', shards: '[0,1,2]' }, 'leading zeros are numbers, not octal');
+  assert.match(g3.text, /generation 3, 3 shard\(s\) x 10 candidate\(s\) = 30 candidate\(s\) on the FIT days only, parents from run 123456/);
+  assert.ok(plan({ CANDIDATES: '500', SHARDS: '1' }).ok); assert.ok(plan({ CANDIDATES: '1' }).ok);
+  for (const [env, want] of [
+    [{ PREP_DAYS: '2026-11-11' }, /sweep_gen is exclusive with prep_days and reverdict_run/], [{ REVERDICT_RUN: '5' }, /sweep_gen is exclusive with prep_days and reverdict_run/],
+    [{ SPLIT: 'confirm' }, /a sweep reads the dev split's FIT days only: split=confirm is refused/], [{ SPLIT: 'custom' }, /split=custom is refused/], [{ SPLIT: 'x`y`z' }, /split=x\?y\?z is refused/],
+    [{ DEPTH_PARAMS_RUN: '5' }, /depth_params_run belongs to a normal dev dispatch/],
+    [{ SWEEP_GEN: 'abc' }, /sweep_gen must be a whole number from 0 to 99/], [{ SWEEP_GEN: '100' }, /sweep_gen must be a whole number from 0 to 99/], [{ SWEEP_GEN: '-1' }, /sweep_gen must be a whole number/], [{ SWEEP_GEN: '1.5', PARENTS_RUN: '3' }, /sweep_gen must be a whole number/],
+    [{ CANDIDATES: '0' }, /sweep_candidates \(per shard\) must be a whole number from 1 to 500, got '0'/], [{ CANDIDATES: '501' }, /from 1 to 500, got '501'/], [{ CANDIDATES: '1000' }, /from 1 to 500/], [{ CANDIDATES: 'many' }, /from 1 to 500, got 'many'/], [{ CANDIDATES: '' }, /from 1 to 500/],
+    [{ SHARDS: '0' }, /sweep_shards must be a whole number from 1 to 7/], [{ SHARDS: '8' }, /sweep_shards must be a whole number from 1 to 7 .* got '8'/], [{ SHARDS: '10' }, /from 1 to 7/], [{ SHARDS: 'all' }, /from 1 to 7/],
+    [{ PARENTS_RUN: '99' }, /sweep_parents_run is for generation 1 and later/], [{ SWEEP_GEN: '1', PARENTS_RUN: '' }, /generation 1 needs sweep_parents_run/], [{ SWEEP_GEN: '2', PARENTS_RUN: 'run-9' }, /generation 2 needs sweep_parents_run/],
+  ] as Array<[Record<string, string>, RegExp]>) {
+    const r = plan(env); assert.equal(r.ok, false, JSON.stringify(env)); assert.match(r.log, new RegExp(`^\\[twin\\] ERROR: .*${want.source}`, 'm'), JSON.stringify(env)); assert.match(r.text, /::error::/); assert.deepEqual(r.out, {}, 'a refused plan sets no output');
+  }
+  // the refusal's comment: the plan's reason is the comment; nothing else ran
+  const sent = path.join(tmp, 'sent.md'), bin = path.join(path.dirname(tmp), 'bin');
+  plan({ SHARDS: '9' });
+  const rep = bash(expr(stepScript(y, 'Report a refused sweep dispatch')), { PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: tmp, GH_OUT: sent, GITHUB_SHA: '0123456789abcdef', GH_TOKEN: 't' }, ws);
+  assert.equal(rep.status, 0, rep.stderr); assert.match(fs.readFileSync(sent, 'utf8'), /^History twin sweep plan, run 77 \(failure\), on commit 01234567: no sweep ran\n\n```\n\[twin\] ERROR: sweep_shards must be a whole number from 1 to 7[^\n]*\n```\n$/);
+  assert.match(jobText(y, 'sweep-plan'), /permissions:\n      contents: write/);
+});
+
+test('the shard job\'s judge step passes the shard, the slice, the parents and what is left of the 340 minutes; its Drive step keeps shard files only, copy only', () => {
+  const y = wf(), { ws, bin, tmp } = stageWs();
+  fs.writeFileSync(path.join(bin, 'node'), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$STUB_ARGS"\necho "[twin] stub sweep"\nexit "${STUB_RC:-0}"\n', { mode: 0o755 });
+  const args = path.join(tmp, 'args.txt'), now = () => Math.floor(Date.now() / 1000);
+  const judge = (env: Record<string, string>) => { fs.rmSync(args, { force: true }); fs.rmSync(path.join(tmp, 'build.log'), { force: true }); return bash(stepScript(y, 'Judge this shard'), { PATH: `${bin}:${process.env.PATH}`, FIT: SPLITS.dev.fit.join(','), GEN: '0', SHARD: '3', SHARDS: '7', PER: '10', JOB_START: String(now() - 20 * 60), RUNNER_TEMP: tmp, STUB_ARGS: args, ...env }, ws); };
+  const g0 = judge({});
+  assert.equal(g0.status, 0, g0.stderr);
+  const a0 = fs.readFileSync(args, 'utf8').trim();
+  assert.match(a0, /^--import tsx research\/historyTwin\.ts --stage sweep --split dev --fit-days 2026-11-11,2026-11-12,2026-11-15 --twin-requote data\/replay-src --real data\/twin-real15m --depth-model data\/models\/depth_model\.json --gen 0 --shard 3\/7 --candidates 10 --budget-min \d+ --out data\/sweep$/);
+  const budget = Number(/--budget-min (\d+)/.exec(a0)![1]); assert.ok(budget >= 293 && budget <= 295, `a job 20 minutes old has about 295 minutes to start candidates in (${budget})`);
+  assert.ok(!/--parents/.test(a0), 'generation 0 has no parents');
+  assert.match(fs.readFileSync(path.join(tmp, 'build.log'), 'utf8'), /\[twin\] stub sweep/, 'the stage\'s lines go to the job log file');
+  const g2 = judge({ GEN: '2', SHARD: '0', SHARDS: '1', PER: '500' });
+  assert.match(fs.readFileSync(args, 'utf8'), /--gen 2 --shard 0\/1 --candidates 500 --parents data\/sweep-parents\/elite\.json --budget-min \d+ --out data\/sweep/);
+  const late = judge({ JOB_START: String(now() - 320 * 60) });
+  assert.notEqual(late.status, 0); assert.ok(!fs.existsSync(args), 'no time left: the stage is not started');
+  assert.match(fs.readFileSync(path.join(tmp, 'build.log'), 'utf8'), /^\[twin\] ERROR: no time left for the sweep: the steps before it took 320 minutes of the 340$/m);
+  assert.notEqual(judge({ STUB_RC: '3' }).status, 0, 'a failing stage fails the step (the shard file kept so far is uploaded by the step after it)');
+  assert.equal(g2.status, 0);
+  // the Drive step: copy only, always, and only the shard files
+  const calls = path.join(tmp, 'calls.txt'), drive = tmpDir();
+  const keep = (extra: Record<string, string> = {}) => { fs.rmSync(calls, { force: true }); return bash(expr(stepScript(y, 'Keep this shard\'s results on Drive')), { PATH: `${bin}:${process.env.PATH}`, STUB_CALLS: calls, STUB_DRIVE: drive, RUNNER_TEMP: tmp, ...extra }, ws); };
+  assert.match(jobText(y, 'sweep'), /Keep this shard's results on Drive[^\n]*\n\s+if: \$\{\{ always\(\) \}\}/);
+  const none = keep(); assert.equal(none.status, 0); assert.match(none.stdout, /no shard file to keep/); assert.ok(!fs.existsSync(calls), 'nothing to keep, nothing put');
+  fs.mkdirSync(path.join(ws, 'data/sweep'), { recursive: true }); fs.writeFileSync(path.join(ws, 'data/sweep/sweep-g0-shard3of7.json'), '{}'); fs.writeFileSync(path.join(ws, 'data/sweep/sweep-g0-shard3of7.json.tmp'), 'x'); fs.writeFileSync(path.join(ws, 'data/sweep/other.json'), 'x');
+  const some = keep(); assert.equal(some.status, 0, some.stderr);
+  assert.equal(fs.readFileSync(calls, 'utf8').trim(), "put simulated/history-twin-sweep/77/shards data/sweep --include sweep-g*-shard*.json");
+  assert.deepEqual(fs.readdirSync(path.join(drive, 'simulated/history-twin-sweep/77/shards')), ['sweep-g0-shard3of7.json'], 'only the shard file went up, never its .tmp');
+});
+
+test('sweep-collect: merges the shards from Drive, keeps best.json, elite.json and results.json, says the next dispatch; an incomplete generation is refused', async () => {
+  const fx = await sweepFixture(), y = wf(), { ws, bin, tmp } = stageWs();
+  const sent = path.join(tmp, 'sent.md'), drive = tmpDir(), runDir = path.join(drive, 'simulated/history-twin-sweep/55');
+  const seed = (files: string[]) => { fs.rmSync(drive, { recursive: true, force: true }); if (files.length) fs.mkdirSync(path.join(runDir, 'shards'), { recursive: true }); for (const f of files) fs.copyFileSync(path.join(fx.shardsDir, f), path.join(runDir, 'shards', f)); };
+  const run = (env: Record<string, string> = {}) => { fs.rmSync(sent, { force: true }); fs.rmSync(path.join(tmp, 'collect.log'), { force: true }); fs.rmSync(path.join(tmp, 'collected'), { recursive: true, force: true }); fs.rmSync(path.join(tmp, 'shards'), { recursive: true, force: true });
+    return bash(expr(stepScript(y, 'Merge the shards, keep best.json'), { run: '55' }), { PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: tmp, GH_OUT: sent, JOBS_JSON: '', STUB_DRIVE: drive, GEN: '0', SHARDS: '2', PER: '3', SWEEP_RESULT: 'success', PARTIAL: 'false', RUN: '55', REPO: 'o/r', REF: 'main', SHA: '0123456789abcdef', GH_TOKEN: 't', ...env }, ws); };
+  const s0 = sweepShardName(0, 0, 2), s1 = sweepShardName(0, 1, 2);
+  // a whole generation
+  seed([s0, s1]);
+  const ok = run();
+  assert.equal(ok.status, 0, `${ok.stdout}${ok.stderr}`);
+  assert.deepEqual(fs.readdirSync(runDir).sort(), ['best.json', 'elite.json', 'results.json', 'shards'], 'best, elite and results beside the shards');
+  const log = fs.readFileSync(path.join(tmp, 'collect.log'), 'utf8');
+  assert.match(log, /^\[twin\] sweep g0: 6 of 6 candidates judged by 2 shard\(s\); best loss 0\.5000 \(c0\), median /m);
+  assert.equal([...log.matchAll(/^\[twin\] sweep top \d: c\d+ loss/gm)].length, 5);
+  assert.match(log, /^\[twin\] kept on Drive: simulated\/history-twin-sweep\/55\/\{best,elite,results\}\.json \(shard jobs: success\)$/m);
+  assert.match(log, /^\[twin\] NEXT GENERATION: gh workflow run history-twin\.yml -R o\/r --ref main -f sweep_gen=1 -f sweep_parents_run=55 -f sweep_candidates=3 -f sweep_shards=2$/m);
+  assert.match(log, /^\[twin\] DEV VERDICT of this generation's best: gh workflow run history-twin\.yml -R o\/r --ref main -f split=dev -f depth_params_run=55$/m);
+  const c = fs.readFileSync(sent, 'utf8');
+  assert.match(c, /^History twin sweep, generation 0, run 55 \(shard jobs: success, collect: done\), on commit 01234567\n\n```\n\[twin\] sweep g0:/); assert.match(c, /```\n$/);
+  assert.ok(!/KX[A-Z]|\$[0-9]/.test(c), 'the comment holds numbers and parameter names only');
+  // what it kept is what the fill-in reads
+  assert.deepEqual(readJson(path.join(runDir, 'best.json')), readJson(path.join(fx.collected, 'best.json')));
+  assert.doesNotThrow(() => loadDepthParamsFile(path.join(runDir, 'best.json')));
+  // the exact best parameters survive into the comment whole (the comment cuts a line at 800 characters, and this line is about 450): paste-ready
+  seed([s0, s1]); fs.writeFileSync(path.join(runDir, 'shards', s1), JSON.stringify({ ...readJson(path.join(fx.shardsDir, s1)), results: readJson(path.join(fx.shardsDir, s1)).results.map((r: { index: number }) => (r.index === 4 ? { ...r, loss: 0.1 } : r)) }));
+  const long = run();
+  assert.equal(long.status, 0, `${long.stdout}${long.stderr}`);
+  const lc = fs.readFileSync(sent, 'utf8'), lm = /^\[twin\] sweep best params exact \(g0 c4, loss 0\.1000\): (\{.*\})$/m.exec(lc);
+  assert.ok(lm && lm[0].length > 400, `the exact line is longer than the old 400-character cut (${lm?.[0].length})`);
+  assert.deepEqual(JSON.parse(lm![1]), readJson(path.join(runDir, 'best.json')).params, 'the comment holds the very numbers best.json holds on Drive');
+  assert.deepEqual(JSON.parse(lm![1]), generationCandidates(0, 6)[4]);
+  // a missing shard: refused, nothing kept as best, the reason and the missing candidates in the comment
+  seed([s0]);
+  const miss = run({ SWEEP_RESULT: 'failure' });
+  assert.notEqual(miss.status, 0);
+  assert.deepEqual(fs.readdirSync(runDir).sort(), ['shards'], 'nothing is kept as best.json or elite.json');
+  const mc = fs.readFileSync(sent, 'utf8');
+  assert.match(mc, /^History twin sweep, generation 0, run 55 \(shard jobs: failure, collect: failed\)/); assert.match(mc, /\[twin\] ERROR: .*3 of 6 candidates are missing \(3, 4, 5\); no result file for shard 1: a red shard job/); assert.match(mc, /\[twin\] ERROR: the sweep was not collected \(shard jobs: failure\); nothing was kept as best\.json or elite\.json/);
+  assert.ok(!/NEXT GENERATION/.test(mc), 'no next dispatch for a generation that is not whole');
+  // the exact way out, with this run's id: a red shard job re-runs under the same run id; a finished run is never re-collected as partial
+  assert.match(mc, /^\[twin\] RECOVER, a shard job that crashed or timed out \(red job\): gh run rerun 55 -R o\/r --failed \(same run id, same candidates; the collect job runs again after it\)$/m);
+  assert.match(mc, /^\[twin\] RECOVER, a shard that stopped at its budget \(green job, incomplete; the lines above name it\): a re-run fails the same way\. Dispatch the generation again with fewer sweep_candidates \(now 3 per shard\), or with sweep_partial=true, which the dispatch that runs the shards must carry\.$/m);
+  assert.match(mc, /^\[twin\] RECOVER, there is no way to re-collect a finished run as partial\.$/m);
+  assert.ok(mc.split('\n').every((l) => l.length <= 400), 'no comment line is cut by the 400-character limit');
+  // ... unless it is collected as partial (sweep_partial)
+  const part = run({ SWEEP_RESULT: 'failure', PARTIAL: 'true' });
+  assert.equal(part.status, 0, `${part.stdout}${part.stderr}`); assert.match(fs.readFileSync(sent, 'utf8'), /3 of 6 candidates judged by 1 shard\(s\) \(3 missing: partial\)/); assert.ok(fs.existsSync(path.join(runDir, 'best.json')));
+  assert.ok(!/RECOVER/.test(fs.readFileSync(sent, 'utf8')), 'a partial collect that worked has nothing to recover');
+  // a GREEN shard job that stopped at its budget leaves an incomplete file: the same refusal, naming the shard, even though no job is red
+  seed([s0]); fs.writeFileSync(path.join(runDir, 'shards', s1), JSON.stringify({ ...readJson(path.join(fx.shardsDir, s1)), complete: false, results: readJson(path.join(fx.shardsDir, s1)).results.slice(0, 2) }));
+  const green = run({ SWEEP_RESULT: 'success' });
+  assert.notEqual(green.status, 0);
+  const gc = fs.readFileSync(sent, 'utf8');
+  assert.match(gc, /^History twin sweep, generation 0, run 55 \(shard jobs: success, collect: failed\)/);
+  assert.match(gc, /\[twin\] ERROR: shard 1 is not complete \(2 of 3 candidates\): a red shard job/); assert.match(gc, /^\[twin\] RECOVER, a shard that stopped at its budget \(green job, incomplete; the lines above name it\)/m);
+  assert.ok(!fs.existsSync(path.join(runDir, 'best.json')), 'nothing kept as best.json');
+  const greenPart = run({ SWEEP_RESULT: 'success', PARTIAL: 'true' });
+  assert.equal(greenPart.status, 0, `${greenPart.stdout}${greenPart.stderr}`); assert.match(fs.readFileSync(sent, 'utf8'), /^\[twin\] sweep g0: shard 1 incomplete: 2 of 3 candidates judged \(it stopped at its budget, or its job failed\)$/m);
+  // no shard on Drive at all
+  seed([]);
+  const none = run({ SWEEP_RESULT: 'failure' });
+  assert.notEqual(none.status, 0); assert.match(fs.readFileSync(sent, 'utf8'), /\[twin\] ERROR: no shard results on Drive for run 55: every shard failed before its first candidate/);
+  // a shard file from a sweep that read a DEV day is not collected
+  const tampered = tmpDir(); fs.mkdirSync(path.join(drive, 'simulated/history-twin-sweep/55/shards'), { recursive: true });
+  for (const f of [s0, s1]) fs.writeFileSync(path.join(drive, 'simulated/history-twin-sweep/55/shards', f), JSON.stringify({ ...readJson(path.join(fx.shardsDir, f)), fitDays: [...FIT_DAYS, '2026-11-13'] }));
+  const bad = run({ SWEEP_RESULT: 'success' });
+  assert.notEqual(bad.status, 0); assert.match(fs.readFileSync(sent, 'utf8'), /\[twin\] ERROR: fit days and judged days overlap.*2026-11-13/); assert.ok(!fs.existsSync(path.join(drive, 'simulated/history-twin-sweep/55/best.json')));
+  assert.ok(!/RECOVER/.test(fs.readFileSync(sent, 'utf8')), 'a refused fit day is not a lost shard: no advice to re-run');
+  void tampered;
+});
+
+test('depth_params_run: dev and custom dispatches only, a run id, best.json read from Drive, handed to every depth fill-in', () => {
+  const y = wf();
+  // the split step
+  assert.equal(splitStep({ SPLIT: 'dev', DEPTH_PARAMS_RUN: '55' }).ok, true); assert.equal(splitStep({ SPLIT: 'custom', FIT_IN: '2026-11-11', JUDGE_IN: '2026-11-13,2026-11-14', DEPTH_PARAMS_RUN: '55' }).ok, true);
+  const conf = splitStep({ SPLIT: 'confirm', NOTE: 'a look', DEPTH_PARAMS_RUN: '55' });
+  assert.equal(conf.ok, false); assert.match(conf.text, /depth_params_run is for dev and custom dispatches: split=confirm uses the code defaults, so promote the sweep's params to the defaults through a reviewed code change first/);
+  assert.equal(splitStep({ SPLIT: 'confirm', NOTE: 'a look' }).ok, true, 'a confirm dispatch without it is the usual one');
+  for (const bad of ['abc', '5;rm', '-1', '5 6']) { const r = splitStep({ SPLIT: 'dev', DEPTH_PARAMS_RUN: bad }); assert.equal(r.ok, false, bad); assert.match(r.text, /depth_params_run must be a run id \(digits only\)/); }
+  // the Drive step
+  const { ws, bin, tmp } = stageWs(), drive = tmpDir();
+  const fetch = (run: string) => { fs.rmSync(path.join(ws, 'data/sweep'), { recursive: true, force: true }); fs.rmSync(path.join(tmp, 'build.log'), { force: true }); return bash(stepScript(y, 'The depth simulator parameters of a sweep'), { PATH: `${bin}:${process.env.PATH}`, RUN: run, RUNNER_TEMP: tmp, STUB_DRIVE: drive }, ws); };
+  const bad = fetch('abc'); assert.notEqual(bad.status, 0); assert.match(fs.readFileSync(path.join(tmp, 'build.log'), 'utf8'), /^\[twin\] ERROR: depth_params_run must be a run id \(digits only\)$/m);
+  const gone = fetch('55'); assert.notEqual(gone.status, 0); assert.match(fs.readFileSync(path.join(tmp, 'build.log'), 'utf8'), /^\[twin\] ERROR: depth_params_run 55: no sweep on Drive \(simulated\/history-twin-sweep\/55\)/m);
+  fs.mkdirSync(path.join(drive, 'simulated/history-twin-sweep/55/shards'), { recursive: true });
+  const nobest = fetch('55'); assert.notEqual(nobest.status, 0); assert.match(fs.readFileSync(path.join(tmp, 'build.log'), 'utf8'), /^\[twin\] ERROR: depth_params_run 55: no best\.json in simulated\/history-twin-sweep\/55 \(the sweep's collect job did not finish\)$/m);
+  fs.writeFileSync(path.join(drive, 'simulated/history-twin-sweep/55/best.json'), '{"kind":"sweep-best"}');
+  const ok = fetch('55'); assert.equal(ok.status, 0, ok.stderr); assert.ok(fs.existsSync(path.join(ws, 'data/sweep/best.json'))); assert.match(fs.readFileSync(path.join(tmp, 'build.log'), 'utf8'), /^\[twin\] depth params from sweep run 55 \(best\.json read from Drive\)$/m);
+  assert.match(jobText(y, 'build'), /- name: The depth simulator parameters of a sweep \(depth_params_run\)\n\s+if: \$\{\{ inputs\.depth_params_run != '' \}\}/);
+  // the match-and-fill step hands --depth-params to every depth fill-in (the judged days' and the lag arm's), and only when asked
+  const wsn = stageWs(); fs.writeFileSync(path.join(wsn.bin, 'node'), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$STUB_ARGS"\necho "[twin] stub"\n', { mode: 0o755 }); fs.writeFileSync(path.join(wsn.ws, 'data/twin/x'), 'x');
+  const args = path.join(wsn.tmp, 'a.txt');
+  const fill = (run: string) => { fs.rmSync(args, { force: true }); const r = bash(stepScript(y, 'Match, fill in, and describe'), { PATH: `${wsn.bin}:${process.env.PATH}`, SPLIT: 'dev', FIT: SPLITS.dev.fit.join(','), JUDGE: DEV_JUDGED.join(','), WARM: '2026-11-12', NEED: '2026-11-13', LAG: 'true', DEPTH_PARAMS_RUN: run, RUNNER_TEMP: wsn.tmp, STUB_ARGS: args }, wsn.ws); assert.equal(r.status, 0, `${r.stdout}${r.stderr}`); return fs.readFileSync(args, 'utf8').split('\n').filter((l) => /--stage fill/.test(l)); };
+  const withRun = fill('55'), without = fill('');
+  assert.equal(withRun.length, 2); assert.ok(withRun.every((l) => / --depth-model data\/models\/depth_model\.json --split-file data\/twin\/split\.json --depth-params data\/sweep\/best\.json$/.test(l)), withRun.join('\n'));
+  assert.equal(without.length, 2); assert.ok(without.every((l) => !/--depth-params/.test(l)), 'no run, no flag');
+  // the params are kept with the simulated twin on Drive (data/sweep is linked into it)
+  assert.match(stepScript(y, 'Keep the simulated twin on Drive'), /\[ -d data\/sweep \] && ln -s "\$GITHUB_WORKSPACE\/data\/sweep" "\$S\/sweep"/);
 });
