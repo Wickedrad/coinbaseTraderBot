@@ -9,7 +9,9 @@ The plan (PLAN.md) was written and attacked by two critics before any test was r
 A pattern can be seen, but it is not a clock, and it gives no date. Nothing below is a timing call or a stand-down.
 
 1. Every pace below is measured on the settled, hand-picked anchors. An alignment that is given no anchors agrees with
-   them on the late legs (end of the consolidation, today on the parent's top) and not on the early ones (section 5).
+   them on the late legs (end of the consolidation, today on the parent's top) and not on the early ones, and it fits
+   look-alike windows as well as it fits the real parent (23rd of 75 same-length BTC.D windows; section 5). The map
+   rests on the anchors, not on a statistical match.
 2. On those anchors the pace was 1 in the waterfall, 5 in the rise after it, then about 21 for three stretches in a
    row if the top is the June 2025 high (34 on the last one if the top is today). A jump, then a plateau.
 3. One description passed the planned test: the pace rises along the structure (consistent with, on five hand-picked
@@ -187,7 +189,28 @@ Run forward in real time (refit every 13 weeks from Jan 2019 on data to that wee
   run-forward cannot tell an early top from a late one. It recognised each fall only after the fall was complete, and it
   read "top" two years before the high.
 
-Look-alike test for the automatic alignment: PENDING (m2_null.py, running).
+Look-alike test for the automatic alignment (m2_null.py, 884 fits on the GitHub runner). Score = log-likelihood gain
+per week over a flat fit, last week on the parent's top, best amplitude on the grid. The real parent scores 1.070.
+
+| look-alike | fits | median score | share scoring as high as the real parent |
+|---|---|---|---|
+| the child with its phases randomised (same values and spectrum, order scrambled), real parent | 200 | 0.80 | 0 of 200 |
+| the child rebuilt from its own weekly changes resampled in blocks, real parent | 200 | 1.30 | 72.5% |
+| BTC.D windows before the parent, both ways up | 38 | 1.06 | 50% |
+| OTHERS.D windows before the parent, both ways up | 40 | 1.04 | 45% |
+| XLM/BTC windows before the child, both ways up | 38 | 1.04 | 39% |
+| XRP/BTC windows before the child, both ways up | 66 | 0.91 | 29% |
+| DOGE/BTC windows before the child, both ways up | 82 | 0.88 | 23% |
+| ETH/BTC windows before the child, both ways up | 42 | 0.80 | 17% |
+| LTC/BTC windows before the child, both ways up | 102 | 0.75 | 7% |
+| every same-length BTC.D window to Dec 2017, right way up | 75 | 0.97 | 31% (the true window ranks 23rd of 75) |
+
+- In each of the seven placebo sources the best window fits the child better than the real parent does (7 of 7).
+- The real child beats every phase-randomised copy of itself, so it is not noise: it has a few large, clean swings. But
+  a random walk built from the child's own weekly changes fits the parent as well, and a flexible time map lays the
+  child's swings on a third to a half of other BTC.D windows as well as on the real parent.
+- So the blind alignment does not single out this parent. It neither confirms nor refutes the pairing: the map rests on
+  the hand-picked anchors, not on a statistical match.
 
 ## 6. Cross-reference: matched stretches on other charts (m5_matched_days.py)
 
