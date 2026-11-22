@@ -86,7 +86,7 @@ What the table shows:
   whether one has started.
 - The 2021 fall ran at about a quarter of the waterfall speed and the 2025 drop at about an eighth. That fits keeping
   them off the waterfall list. The 2021 fall began from volatility like the 2017 waterfall's (0.031 against 0.028) and
-  was still four times slower, so starting volatility alone does not make a waterfall; the 2025 drop began from a much
+  was still three times slower, so starting volatility alone does not make a waterfall; the 2025 drop began from a much
   quieter market (0.013).
 - Every 4-week fall of 0.5 logit or more on record (BTC down 39% against the rest in four weeks) ended between May 2014
   and Jan 14 2018. There are seven; none since. The largest since is -0.469 (2021). The 0.5 cut-off was picked after
@@ -136,8 +136,8 @@ leaving one stretch out and predicting it from the other four. Error is in log u
 | L4 market size | 1.89 | 0.05 | 1.93 | 0.20 |
 | L5 directional changes per week (intrinsic time) | 1.37 | 0.87 | 1.26 | 0.90 |
 | placebo: S&P 500 volatility | 1.35 | -0.87 | 1.20 | -0.90 |
-| placebo: dollar index volatility | 4.77 | 0.21 | 4.97 | 0.00 |
-| placebo: EUR/USD volatility | 2.93 | 0.21 | 3.16 | 0.00 |
+| placebo: dollar index volatility | 4.77 | 0.21 | 4.98 | 0.00 |
+| placebo: EUR/USD volatility | 2.92 | 0.21 | 3.14 | 0.00 |
 
 - By the plan's rule L1 passes: it beats the constant pace and every placebo clock when a stretch is left out, and the
   planned family-wide exact permutation test (the five paces dealt out in all 120 orders, best law each time) gives
@@ -176,12 +176,12 @@ In hindsight (all data, the last week required to sit on the parent's top or pas
   the parent the fit falls apart as well. The alignment leans on the parent's steps and on being told where it ends.
 
 Run forward in real time (refit every 13 weeks from Jan 2019 on data to that week only):
-- With the amplitude free, the real-time reading was degenerate (amplitude 4.5, parked on Jul to Sep 2016) in every
-  quarter from Jan 2020 to Jan 2023 and again from Jun 2025 to today. Only from Apr 2023 to Mar 2025 did it settle on a
-  sensible amplitude (2.0 to 3.0).
+- With the amplitude free, the real-time reading was degenerate (amplitude 3.5 to 4.5, at or near the edge of the
+  allowed range, parked on Jul to Sep 2016) in every quarter from Jan 2020 to Jan 2023 and again from Jun 2025 to
+  today. Only from Apr 2023 to Mar 2025 did it settle on a sensible amplitude (2.0 to 3.0).
 - With the amplitude held at 2.3 (a value only hindsight supplies): the reading wandered through the 2018-21 hump
-  (Dec 2016 in Oct 2019, back to Oct 2016 through 2020, Aug 2016 in Apr 2021), then sat on the end of the grey box from
-  Oct 2021 to Apr 2023, and has sat on the parent's top in every quarter from July 2023 to today.
+  (late Nov 2016 in Oct 2019, back to Oct 2016 through most of 2020, Aug 2016 in Apr 2021), then sat on the end of
+  the grey box from Oct 2021 to Apr 2023, and has sat on the parent's top in every quarter from July 2023 to today.
 - In July 2023 BTC.D was near 50%. It then rose to 65.72 and went sideways near 59 to 61. The real-time reading said
   "top" through all of it, because each refit lines the child's highest level so far up with the parent's top. So the
   run-forward cannot tell an early top from a late one. It recognised each fall only after the fall was complete, and it
