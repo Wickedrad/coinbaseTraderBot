@@ -1,2 +1,3 @@
-stage=dspocket
-# Round 3 on recorded days, second pass: the same scan plus the whole map of side x price bucket x placement at the longest rest (build against check), to see whether the NO-favourite pocket of Nov 11-16 shows in the 202 earlier days. Recorded days only.
+stage=dsmdcoin,dsmdinv
+days=2026-11-18
+# Round 4 on recorded days (Nov 22 2026): (a) the lag and maker questions coin by coin, SOL and XRP on their own, and a pick on three coins judged on the fourth; (b) which series (hourly ladders and brackets) the recording of one day holds. Recorded days only.

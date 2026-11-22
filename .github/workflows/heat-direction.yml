@@ -892,6 +892,67 @@ jobs:
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/maker" out/maker
 
+  # Round 4a (Nov 22 2026, recorded days only): the lag and maker questions coin by coin on the same grids, SOL and XRP on their own, and a pick made on three coins
+  # judged on the fourth (every way of holding out 4 of the 10 days at once). Aggregates only; the tables go back to Drive under models/subminute/coins.
+  dsmdcoin:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsmdcoin')
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The grids
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/subminute/grids" data/grids || { echo "::error::no grids on Drive (run dsmdgrid first)"; exit 1; }
+          ls data/grids | head -20
+      - name: Coin by coin (build days up to buildlast= in RUN, default 2026-11-16)
+        working-directory: python
+        run: |
+          set -o pipefail
+          bl=$(sed -nE 's/^buildlast=([0-9-]+)[[:space:]]*$/\1/p' ../research/heat_direction/RUN | tail -1); bl=${bl:-2026-11-16}
+          python3 -W ignore -m subminute.coins --grids ../data/grids --build-last "$bl" --out ../out/coins 2>&1 | tail -14 | cut -c1-9000
+      - name: Keep the tables on Drive
+        run: bash deploy/drive_lab.sh put "models/subminute/coins" out/coins
+
+  # Round 4b (recorded day, read only): which series does the bot's own recording hold, besides the 15-minute ones? Lines by kind and series, distinct markets, minutes
+  # from open to close, one market line per series. Decides whether the hourly ladders and brackets can go through the 1-second grids. days=YYYY-MM-DD picks the day.
+  dsmdinv:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsmdinv')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Pull the recorded day
+        id: day
+        run: |
+          set -euo pipefail
+          d=$(sed -nE 's/^days=([0-9-]+).*/\1/p' research/heat_direction/RUN | tail -1); d=${d:-2026-11-18}
+          echo "day=$d" >> "$GITHUB_OUTPUT"
+          bash deploy/drive_lab.sh recording "$d" data/rec
+          ls -l data/rec | tail -2
+      - name: Count the series
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.inventory "../data/rec/md-${{ steps.day.outputs.day }}.jsonl.gz" 2>&1 | cut -c1-2500 | head -90
+
   # Round 2 format peek (recorded day, read only): what the lifecycle, market and the other recorded kinds look like, so the reducer reads settlements and the fast
   # spot feed correctly. Prints a few market-data lines and key counts only.
   dsmdpeek:
