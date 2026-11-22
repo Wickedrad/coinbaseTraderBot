@@ -199,7 +199,7 @@ def fig_two_readings():
     R1p = [("2016-06-19", "2016-07-24", "1", "fall", "July 2016\nwaterfall"), ("2016-07-24", "2016-12-18", "2", "", "rise, then the\nDecember 16 step"),
            ("2016-12-18", "2017-01-15", "3", "hump", "grey\nbox"), ("2017-01-15", "2017-02-26", "4", "", "rise to\nthe top")]
     R1c = [("2017-12-10", "2018-01-14", "1", "fall", "2017-18\nwaterfall"), ("2018-01-14", "2021-05-16", "2", "", "2018 to 2021 hump"),
-           ("2021-05-16", "2023-01-08", "3", "hump", "2021-22\nbump"), ("2023-01-08", str(TODAY.date()), "4", "", "rise to the top")]
+           ("2021-05-16", "2023-01-08", "3", "hump", "2021-22 sideways\nconsolidation"), ("2023-01-08", str(TODAY.date()), "4", "", "rise to the top")]
     R2p = [("2016-06-19", "2016-11-20", "0", "", "July 2016 waterfall\nand the rise after it"), ("2016-11-20", "2016-12-18", "1", "fall", "Dec 16\nstep"),
            ("2016-12-18", "2017-01-15", "2", "hump", "grey\nbox"), ("2017-01-15", "2017-02-26", "3", "", "rise to\nthe top")]
     R2c = [("2017-02-26", "2017-12-10", "0", "", "2017"), ("2017-12-10", "2018-01-14", "1", "fall", "2017-18\nwaterfall"),
@@ -229,11 +229,11 @@ def fig_two_readings():
                 ax.xaxis.set_major_locator(mdates.YearLocator()); ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
             ax.tick_params(axis="x", labelsize=8, colors=INK2)
             ax.set_title(("Parent: BTC dominance, %, Jun 2016 to Mar 2017" if k == 0 else "Child: BTC dominance, %, Feb 2017 to today"), loc="left", color=INK, fontsize=9, fontweight="bold", pad=20)
-    fig.suptitle("Two ways to pair the parent with the child: which one do you see?", x=0.055, y=0.985, ha="left", color=INK, fontsize=13, fontweight="bold")
+    fig.suptitle("Two ways to pair the parent with the child", x=0.055, y=0.985, ha="left", color=INK, fontsize=13, fontweight="bold")
     fig.text(0.055, 0.962, "Same two charts in both rows. The same number marks the pieces that are paired. Grey is the grey box on the parent and its match on the child.\n"
              "The tinted strip is the 2017-18 waterfall on the child and the piece of the parent it is paired with.", color=INK2, fontsize=8.5, va="top")
-    rows = (("Reading 1: your November 2 note, used in rounds 14 to 16", "1 July 2016 waterfall = 2017-18 waterfall     2 rise and December step = 2018 to 2021 hump     3 grey box = 2021-22 bump     4 rise to the top"),
-            ("Reading 2: tonight's correction", "0 earlier pieces, not looked at     1 December 16 step = 2017-18 waterfall     2 grey box = 2018 to 2021 hump     3 rise to the top"))
+    rows = (("Reading 1: the overall fractal (your November 2 note, used in rounds 14 to 16)", "1 July 2016 waterfall = 2017-18 waterfall     2 rise and December step = 2018 to 2021 hump     3 grey box = 2021-22 sideways consolidation     4 rise to the top"),
+            ("Reading 2: tonight's correction, which you call a fractal artifact (an echo)", "0 earlier pieces, not looked at     1 December 16 step = 2017-18 waterfall     2 grey box = 2018 to 2021 hump     3 rise to the top"))
     fig.subplots_adjust(left=0.055, right=0.985, top=0.83, bottom=0.06)
     for r, (h, sub) in enumerate(rows):
         y = axs[r, 0].get_position().y1

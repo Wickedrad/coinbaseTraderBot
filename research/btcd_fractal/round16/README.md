@@ -129,3 +129,23 @@ part. He also rules out one more push up in BTC dominance (it would break the he
 - Open: this pairing puts the 2017-18 waterfall against the Dec 16 2016 index step. Carried back
   one structure (not Steven's wording) the July 2016 waterfall sits against Feb 26 to Aug 27 2017.
 - Everything from the 2021 fall low onward is as in the addendum above.
+
+## Settled: reading 1 is the fractal, the corrected hump is an echo (Nov 21, 2026, 10:50 PM EST / Nov 22, 03:50 UTC)
+
+Steven, after seeing both pairings side by side (`two_readings.png`, drawn by `charts.py`): "both
+things are true at once". The overall fractal is reading 1 (his November 2 note): July 2016
+waterfall = 2017-18 waterfall, rise and December 16 step = the 2018 to 2021 hump, grey box = the
+2021-22 sideways consolidation (not a "bump"), then the rise to the top. The corrected hump above
+is "a kind of fractal artifact": an echo, not a second set of anchors. Kept from tonight: the top
+is now (the zone since June 2025), no more push up, the dilation moves.
+
+- Echo on the parent itself: hump 95.19, 97.19, 95.11 over 21 weeks; grey box 95.11, 95.96, 94.91
+  over 4 weeks. Each gives back a little more than it gained (104% and 124% of the rise); the grey
+  box is 2.3 times smaller and 5 times shorter. Timing differs: 81% of the hump's time is the way
+  up, 25% of the grey box's.
+- Consolidation: parent weekly closes 94.91 to 95.96 for 4 weeks (about half the size of the fall
+  before it, logs); child 39.36 to 48.03 from May 2021 to the end of 2022 (about a third).
+- Pace on reading 1: 1.0, 5.1, 22.0, 19.5 to 21.5 for the consolidation, then 34 to 35 for the
+  last rise to today (21 to 23 to the June 22 2025 high).
+- Put back: the BTC crash inside the grey box (Jan 4 to 11 2017, -30.2%) pairs with the 2022 bear
+  inside the consolidation (Nov 8 2021 to Nov 21 2022, -76.7%), not with spring 2021.
