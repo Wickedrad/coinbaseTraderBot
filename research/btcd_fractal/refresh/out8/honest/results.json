@@ -1,9 +1,9 @@
 {
  "module": "study8_honest",
- "runUtc": "2026-11-16 08:05 UTC",
- "runEt": "2026-11-16 03:05 ET",
+ "runUtc": "2026-11-23 09:14 UTC",
+ "runEt": "2026-11-23 04:14 ET",
  "fast": false,
- "runtimeSec": 168.6,
+ "runtimeSec": 72.9,
  "oos": {
   "fixed5:fall5_26w": {
    "byEra": {
@@ -2741,16 +2741,16 @@
     "n": 104
    },
    "2023-2026": {
-    "cell": 0.152,
-    "m2bucket": 0.529,
-    "global": 0.319,
-    "n": 204
+    "cell": 0.156,
+    "m2bucket": 0.527,
+    "global": 0.317,
+    "n": 205
    },
    "pooled": {
-    "cell": 0.271,
-    "m2bucket": 0.471,
+    "cell": 0.273,
+    "m2bucket": 0.47,
     "global": 0.258,
-    "n": 399
+    "n": 400
    }
   },
   "firstForecast": {
@@ -2772,8 +2772,8 @@
     "stack": "2019-04-07"
    },
    "nCommonRows": {
-    "fall5_26w": 399,
-    "fall10_26w": 399
+    "fall5_26w": 400,
+    "fall10_26w": 400
    },
    "firstTrainingRowWithEthbtc": "2017-06-18"
   },
@@ -3301,19 +3301,19 @@
    "strat:fall5_26w": {
     "n": 52,
     "real": 0.635,
-    "nullMedian": 0.485,
-    "nullP95": 0.6721,
-    "nullP05": 0.2743,
-    "p": 0.115,
+    "nullMedian": 0.4805,
+    "nullP95": 0.6683,
+    "nullP05": 0.259,
+    "p": 0.135,
     "quotable": true,
     "exact": false
    },
    "strat:fall10_26w": {
     "n": 52,
     "real": 0.401,
-    "nullMedian": 0.2185,
-    "nullP95": 0.5022,
-    "nullP05": 0.0824,
+    "nullMedian": 0.22,
+    "nullP95": 0.4944,
+    "nullP05": 0.0862,
     "p": 0.212,
     "quotable": true,
     "exact": false
@@ -3321,9 +3321,9 @@
    "fixed5:fall5_26w": {
     "n": 52,
     "real": 0.919,
-    "nullMedian": 0.4865,
-    "nullP95": 0.664,
-    "nullP05": 0.3806,
+    "nullMedian": 0.4905,
+    "nullP95": 0.6651,
+    "nullP05": 0.3765,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -3331,9 +3331,9 @@
    "fixed5:fall10_26w": {
     "n": 52,
     "real": 0.891,
-    "nullMedian": 0.439,
-    "nullP95": 0.815,
-    "nullP05": 0.1401,
+    "nullMedian": 0.4425,
+    "nullP95": 0.8165,
+    "nullP05": 0.1389,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -3341,9 +3341,9 @@
    "m2only:fall5_26w": {
     "n": 52,
     "real": 0.812,
-    "nullMedian": 0.4435,
-    "nullP95": 0.6027,
-    "nullP05": 0.3041,
+    "nullMedian": 0.4385,
+    "nullP95": 0.6016,
+    "nullP05": 0.2976,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -3352,8 +3352,8 @@
     "n": 52,
     "real": 0.887,
     "nullMedian": 0.454,
-    "nullP95": 0.6619,
-    "nullP05": 0.1572,
+    "nullP95": 0.6566,
+    "nullP05": 0.1644,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -3361,9 +3361,9 @@
    "m2eth:fall5_26w": {
     "n": 52,
     "real": 0.887,
-    "nullMedian": 0.457,
-    "nullP95": 0.6295,
-    "nullP05": 0.3538,
+    "nullMedian": 0.4535,
+    "nullP95": 0.63,
+    "nullP05": 0.3589,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -3371,9 +3371,9 @@
    "m2eth:fall10_26w": {
     "n": 52,
     "real": 0.815,
-    "nullMedian": 0.408,
-    "nullP95": 0.6754,
-    "nullP05": 0.1202,
+    "nullMedian": 0.3945,
+    "nullP95": 0.6627,
+    "nullP05": 0.1174,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -3381,29 +3381,29 @@
    "ethonly:fall5_26w": {
     "n": 52,
     "real": 0.64,
-    "nullMedian": 0.4595,
-    "nullP95": 0.6151,
-    "nullP05": 0.2368,
-    "p": 0.058,
+    "nullMedian": 0.459,
+    "nullP95": 0.612,
+    "nullP05": 0.2333,
+    "p": 0.038,
     "quotable": true,
     "exact": false
    },
    "ethonly:fall10_26w": {
     "n": 52,
     "real": 0.272,
-    "nullMedian": 0.284,
-    "nullP95": 0.437,
-    "nullP05": 0.0906,
-    "p": 0.577,
+    "nullMedian": 0.286,
+    "nullP95": 0.4419,
+    "nullP05": 0.0931,
+    "p": 0.654,
     "quotable": true,
     "exact": false
    },
    "clock:fall5_26w": {
     "n": 52,
     "real": 0.569,
-    "nullMedian": 0.4885,
-    "nullP95": 0.6377,
-    "nullP05": 0.2088,
+    "nullMedian": 0.49,
+    "nullP95": 0.6368,
+    "nullP05": 0.2098,
     "p": 0.308,
     "quotable": true,
     "exact": false
@@ -3411,8 +3411,8 @@
    "clock:fall10_26w": {
     "n": 52,
     "real": 0.877,
-    "nullMedian": 0.31,
-    "nullP95": 0.7269,
+    "nullMedian": 0.3045,
+    "nullP95": 0.7268,
     "nullP05": 0.1797,
     "p": 0.0,
     "quotable": true,
@@ -3421,9 +3421,9 @@
    "renewal:fall5_26w": {
     "n": 52,
     "real": 0.625,
-    "nullMedian": 0.4385,
-    "nullP95": 0.5725,
-    "nullP05": 0.1667,
+    "nullMedian": 0.438,
+    "nullP95": 0.583,
+    "nullP05": 0.1652,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -3431,8 +3431,8 @@
    "renewal:fall10_26w": {
     "n": 52,
     "real": 0.103,
-    "nullMedian": 0.163,
-    "nullP95": 0.2769,
+    "nullMedian": 0.161,
+    "nullP95": 0.2709,
     "nullP05": 0.097,
     "p": 0.923,
     "quotable": true,
@@ -3441,19 +3441,19 @@
    "eramean:fall5_26w": {
     "n": 52,
     "real": 0.512,
-    "nullMedian": 0.438,
-    "nullP95": 0.5297,
-    "nullP05": 0.224,
-    "p": 0.096,
+    "nullMedian": 0.4375,
+    "nullP95": 0.5275,
+    "nullP05": 0.2205,
+    "p": 0.077,
     "quotable": true,
     "exact": false
    },
    "eramean:fall10_26w": {
     "n": 52,
     "real": 0.216,
-    "nullMedian": 0.299,
-    "nullP95": 0.4219,
-    "nullP05": 0.1327,
+    "nullMedian": 0.2995,
+    "nullP95": 0.4264,
+    "nullP05": 0.1346,
     "p": 0.712,
     "quotable": true,
     "exact": false
@@ -3461,18 +3461,18 @@
    "readiness:fall5_26w": {
     "n": 52,
     "real": 0.592,
-    "nullMedian": 0.5,
-    "nullP95": 0.6022,
-    "nullP05": 0.4221,
-    "p": 0.115,
+    "nullMedian": 0.503,
+    "nullP95": 0.6059,
+    "nullP05": 0.4235,
+    "p": 0.135,
     "quotable": true,
     "exact": false
    },
    "readiness:fall10_26w": {
     "n": 52,
     "real": 0.721,
-    "nullMedian": 0.435,
-    "nullP95": 0.6263,
+    "nullMedian": 0.4345,
+    "nullP95": 0.6258,
     "nullP05": 0.412,
     "p": 0.0,
     "quotable": true,
@@ -3481,9 +3481,9 @@
    "strat_vol:fall5_26w": {
     "n": 52,
     "real": 0.628,
-    "nullMedian": 0.4235,
-    "nullP95": 0.6834,
-    "nullP05": 0.162,
+    "nullMedian": 0.4245,
+    "nullP95": 0.682,
+    "nullP05": 0.165,
     "p": 0.077,
     "quotable": true,
     "exact": false
@@ -3491,19 +3491,19 @@
    "strat_vol:fall10_26w": {
     "n": 52,
     "real": 0.401,
-    "nullMedian": 0.1585,
-    "nullP95": 0.4097,
-    "nullP05": 0.073,
-    "p": 0.077,
+    "nullMedian": 0.153,
+    "nullP95": 0.4252,
+    "nullP05": 0.071,
+    "p": 0.096,
     "quotable": true,
     "exact": false
    },
    "offset:fall5_26w": {
     "n": 52,
     "real": 0.896,
-    "nullMedian": 0.484,
-    "nullP95": 0.6351,
-    "nullP05": 0.3244,
+    "nullMedian": 0.479,
+    "nullP95": 0.6483,
+    "nullP05": 0.3248,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -3511,9 +3511,9 @@
    "offset:fall10_26w": {
     "n": 52,
     "real": 0.872,
-    "nullMedian": 0.529,
-    "nullP95": 0.737,
-    "nullP05": 0.188,
+    "nullMedian": 0.5265,
+    "nullP95": 0.7377,
+    "nullP05": 0.1914,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -3521,9 +3521,9 @@
    "stack:fall5_26w": {
     "n": 52,
     "real": 0.917,
-    "nullMedian": 0.5175,
-    "nullP95": 0.643,
-    "nullP05": 0.3537,
+    "nullMedian": 0.5165,
+    "nullP95": 0.6494,
+    "nullP05": 0.353,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -3531,8 +3531,8 @@
    "stack:fall10_26w": {
     "n": 52,
     "real": 0.899,
-    "nullMedian": 0.471,
-    "nullP95": 0.7631,
+    "nullMedian": 0.449,
+    "nullP95": 0.7638,
     "nullP05": 0.119,
     "p": 0.0,
     "quotable": true,
@@ -3564,9 +3564,9 @@
     "2023-2026": {
      "n": 120,
      "real": 0.153,
-     "nullMedian": 0.637,
-     "nullP95": 0.926,
-     "nullP05": 0.07,
+     "nullMedian": 0.633,
+     "nullP95": 0.922,
+     "nullP05": 0.067,
      "p": 0.808,
      "quotable": true,
      "exact": true
@@ -3574,10 +3574,10 @@
     "pooled": {
      "n": 300,
      "real": 0.635,
-     "nullMedian": 0.36,
+     "nullMedian": 0.358,
      "nullP95": 0.6821,
-     "nullP05": 0.1847,
-     "p": 0.077,
+     "nullP05": 0.1809,
+     "p": 0.087,
      "quotable": true,
      "exact": false
     }
@@ -3606,7 +3606,7 @@
     "2023-2026": {
      "n": 120,
      "real": 0.988,
-     "nullMedian": 0.3035,
+     "nullMedian": 0.3045,
      "nullP95": 0.949,
      "nullP05": 0.039,
      "p": 0.042,
@@ -3616,9 +3616,9 @@
     "pooled": {
      "n": 300,
      "real": 0.919,
-     "nullMedian": 0.483,
-     "nullP95": 0.7281,
-     "nullP05": 0.2097,
+     "nullMedian": 0.482,
+     "nullP95": 0.7261,
+     "nullP05": 0.199,
      "p": 0.0,
      "quotable": true,
      "exact": false
@@ -3648,9 +3648,9 @@
     "2023-2026": {
      "n": 120,
      "real": 0.485,
-     "nullMedian": 0.4965,
+     "nullMedian": 0.497,
      "nullP95": 0.9322,
-     "nullP05": 0.068,
+     "nullP05": 0.073,
      "p": 0.583,
      "quotable": true,
      "exact": true
@@ -3658,9 +3658,9 @@
     "pooled": {
      "n": 300,
      "real": 0.812,
-     "nullMedian": 0.422,
-     "nullP95": 0.7423,
-     "nullP05": 0.195,
+     "nullMedian": 0.423,
+     "nullP95": 0.7441,
+     "nullP05": 0.191,
      "p": 0.027,
      "quotable": true,
      "exact": false
@@ -3690,7 +3690,7 @@
     "2023-2026": {
      "n": 120,
      "real": 0.979,
-     "nullMedian": 0.416,
+     "nullMedian": 0.4005,
      "nullP95": 0.9791,
      "nullP05": 0.0866,
      "p": 0.058,
@@ -3700,9 +3700,9 @@
     "pooled": {
      "n": 300,
      "real": 0.887,
-     "nullMedian": 0.485,
-     "nullP95": 0.739,
-     "nullP05": 0.2449,
+     "nullMedian": 0.48,
+     "nullP95": 0.7267,
+     "nullP05": 0.2465,
      "p": 0.007,
      "quotable": true,
      "exact": false
@@ -3732,9 +3732,9 @@
     "2023-2026": {
      "n": 120,
      "real": 0.7,
-     "nullMedian": 0.4515,
+     "nullMedian": 0.451,
      "nullP95": 0.9924,
-     "nullP05": 0.095,
+     "nullP05": 0.09,
      "p": 0.258,
      "quotable": true,
      "exact": true
@@ -3764,7 +3764,7 @@
     "2023-2026": {
      "n": 120,
      "real": 0.555,
-     "nullMedian": 0.105,
+     "nullMedian": 0.104,
      "nullP95": 0.857,
      "nullP05": 0.0,
      "p": 0.3,
@@ -3796,10 +3796,10 @@
     "2023-2026": {
      "n": 120,
      "real": 0.083,
-     "nullMedian": 0.1675,
+     "nullMedian": 0.171,
      "nullP95": 0.994,
-     "nullP05": 0.077,
-     "p": 0.933,
+     "nullP05": 0.069,
+     "p": 0.925,
      "quotable": true,
      "exact": true
     }
@@ -3874,7 +3874,8 @@
   "provisionalBars": [
    "2026-11-08",
    "2026-11-15",
-   "2026-11-22"
+   "2026-11-22",
+   "2026-11-29"
   ],
   "btcd": 60.51,
   "btcd_exstable": 65.0,
@@ -4075,8 +4076,8 @@
   },
   "provisionalReading": {
    "strat": 0.4808,
-   "fixed5": 0.0369,
-   "offset": 0.0746
+   "fixed5": 0.0356,
+   "offset": 0.072
   }
  },
  "series": {
@@ -6483,7 +6484,7 @@
    },
    {
     "t": "2026-11-22",
-    "v": 0.0369
+    "v": 0.0362
    }
   ],
   "fixed5_fall10_26w": [
@@ -8087,7 +8088,7 @@
    },
    {
     "t": "2026-11-22",
-    "v": 0.0746
+    "v": 0.0731
    }
   ],
   "offset_fall10_26w": [
@@ -16085,9 +16086,9 @@
     "2023-2026": {
      "n": 120,
      "real": 0.153,
-     "nullMedian": 0.637,
-     "nullP95": 0.926,
-     "nullP05": 0.07,
+     "nullMedian": 0.633,
+     "nullP95": 0.922,
+     "nullP05": 0.067,
      "p": 0.808,
      "quotable": true,
      "exact": true
@@ -16095,10 +16096,10 @@
     "pooled": {
      "n": 300,
      "real": 0.635,
-     "nullMedian": 0.36,
+     "nullMedian": 0.358,
      "nullP95": 0.6821,
-     "nullP05": 0.1847,
-     "p": 0.077,
+     "nullP05": 0.1809,
+     "p": 0.087,
      "quotable": true,
      "exact": false
     }
@@ -16127,7 +16128,7 @@
     "2023-2026": {
      "n": 120,
      "real": 0.988,
-     "nullMedian": 0.3035,
+     "nullMedian": 0.3045,
      "nullP95": 0.949,
      "nullP05": 0.039,
      "p": 0.042,
@@ -16137,9 +16138,9 @@
     "pooled": {
      "n": 300,
      "real": 0.919,
-     "nullMedian": 0.483,
-     "nullP95": 0.7281,
-     "nullP05": 0.2097,
+     "nullMedian": 0.482,
+     "nullP95": 0.7261,
+     "nullP05": 0.199,
      "p": 0.0,
      "quotable": true,
      "exact": false
@@ -16169,9 +16170,9 @@
     "2023-2026": {
      "n": 120,
      "real": 0.485,
-     "nullMedian": 0.4965,
+     "nullMedian": 0.497,
      "nullP95": 0.9322,
-     "nullP05": 0.068,
+     "nullP05": 0.073,
      "p": 0.583,
      "quotable": true,
      "exact": true
@@ -16179,9 +16180,9 @@
     "pooled": {
      "n": 300,
      "real": 0.812,
-     "nullMedian": 0.422,
-     "nullP95": 0.7423,
-     "nullP05": 0.195,
+     "nullMedian": 0.423,
+     "nullP95": 0.7441,
+     "nullP05": 0.191,
      "p": 0.027,
      "quotable": true,
      "exact": false
@@ -16211,7 +16212,7 @@
     "2023-2026": {
      "n": 120,
      "real": 0.979,
-     "nullMedian": 0.416,
+     "nullMedian": 0.4005,
      "nullP95": 0.9791,
      "nullP05": 0.0866,
      "p": 0.058,
@@ -16221,9 +16222,9 @@
     "pooled": {
      "n": 300,
      "real": 0.887,
-     "nullMedian": 0.485,
-     "nullP95": 0.739,
-     "nullP05": 0.2449,
+     "nullMedian": 0.48,
+     "nullP95": 0.7267,
+     "nullP05": 0.2465,
      "p": 0.007,
      "quotable": true,
      "exact": false
@@ -16253,9 +16254,9 @@
     "2023-2026": {
      "n": 120,
      "real": 0.7,
-     "nullMedian": 0.4515,
+     "nullMedian": 0.451,
      "nullP95": 0.9924,
-     "nullP05": 0.095,
+     "nullP05": 0.09,
      "p": 0.258,
      "quotable": true,
      "exact": true
@@ -16285,7 +16286,7 @@
     "2023-2026": {
      "n": 120,
      "real": 0.555,
-     "nullMedian": 0.105,
+     "nullMedian": 0.104,
      "nullP95": 0.857,
      "nullP05": 0.0,
      "p": 0.3,
@@ -16317,10 +16318,10 @@
     "2023-2026": {
      "n": 120,
      "real": 0.083,
-     "nullMedian": 0.1675,
+     "nullMedian": 0.171,
      "nullP95": 0.994,
-     "nullP05": 0.077,
-     "p": 0.933,
+     "nullP05": 0.069,
+     "p": 0.925,
      "quotable": true,
      "exact": true
     }
@@ -16952,7 +16953,7 @@
   "source": "study8_baselines.run_fixed"
  },
  "notes": [
-  "Last complete Sunday close 2026-11-01; bars ['2026-11-08', '2026-11-15', '2026-11-22'] are provisional (partial week): labels are built from complete closes only, so the provisional bar is in no training set and no evaluation label.",
+  "Last complete Sunday close 2026-11-01; bars ['2026-11-08', '2026-11-15', '2026-11-22', '2026-11-29'] are provisional (partial week): labels are built from complete closes only, so the provisional bar is in no training set and no evaluation label.",
   "Training labels for every model that uses ethbtc_fromhi52w (fixed5, m2eth, strat, strat_vol, offset, stack, km26) begin 2017-06-18 (first finite ETH/BTC 52-week high): the Nov 2016 - May 2017 waterfall is outside every one of their fits; only its Dec 2017 tail is ever trained on. strat_m2btc (M2 x BTC drawdown, no ETH/BTC) trains from 2016-06 and is reported beside it.",
   "BTC.D 2016-18 is TradingView's back-computed series: training only; all metrics are on the common forecast rows (see firstForecast).",
   "M2 is the revised vintage with a 6-week publication lag; today's reading is shown with m2_yoy moved +/-1 point.",
@@ -16963,7 +16964,7 @@
   "offset = logit(fixed5) + logit(strat) - logit(training base), no learned weight; stack = 2-coefficient logistic on in-sample logits (its fixed5 input is in-sample at fit time, so the stack weights lean to fixed5).",
   "Brier is reported against two references on the same rows: the walk-forward training-window base rate (what a forecaster could have used) and the era's own rate (an oracle climatology, not available in real time). A model that beats only the first is better than a stale constant, not calibrated to the era.",
   "btc_dd_ath is rebuilt from the full BTCUSD history (weekly closes from 2013-02): 30 rows differ from the harness column (2016-06-05..2016-12-25, max 0.365); no walk-forward prediction changes (asserted in checks).",
-  "Every metric is on the intersection of all comparators' forecast rows (first forecast 2019-04-07, n 399); the 13 weeks 2019-01-06..2019-03-31 (all label 0) that m2only/clock/eramean could forecast are excluded for everyone, which lowers their 2019-20 AUC and raises the base-rate Brier there relative to a per-model row set.",
+  "Every metric is on the intersection of all comparators' forecast rows (first forecast 2019-04-07, n 400); the 13 weeks 2019-01-06..2019-03-31 (all label 0) that m2only/clock/eramean could forecast are excluded for everyone, which lowers their 2019-20 AUC and raises the base-rate Brier there relative to a per-model row set.",
   "stack has more parameters than label episodes (19 vs 12).",
   "Readiness rule (BTC within 5% of ATH and M2 y/y > 0): with the ATH anchored on the full BTCUSD history it fired at 2 of the 3 big-waterfall peak weeks (drawdowns {'2016-11-20': -0.265, '2017-12-10': 0.0, '2021-01-03': 0.0}); the brief's 3-of-3 record came from the harness anchor at April 2014 ({'2016-11-20': -0.046, '2017-12-10': 0.0, '2021-01-03': 0.0}). Its 2019+ precision (54% on / 22% off) is unchanged because no 2019+ row differs. The 'readiness' leg of the honest claim is therefore a 2-of-3 record on three events.",
   "fixed5 loses to the era's own rate on Brier in 2021-2022 (brier 0.2351 vs own-era 0.2233, skill -0.053): it beats the training-window base there (0.27) only because that constant is stale; mis-calibrated in the era holding the only big event.",
@@ -16978,8 +16979,8 @@
   "fall10_26w is one episode (Oct 2020 - May 2021, none since 2023): every fall10 AUC is a ranking of one event.",
   "km26 (per-stratum KM 1-S(26)) scores pooled 0.663, by era 0.586/0.774/0.287, era-stratified 0.542. The implementer's run reported 0.810 pooled / 0.670 in 2023-26: its 'global' fallback curve was the KM over the spells of cells that had themselves been merged to global (a subset), and a stratum with no such spell got NaN. The fallback consistent with the rate model (the KM over ALL spells, as the global rate is over all training rows) is used now; it changes every global-level forecast (about a quarter of all rows, a third of 2023-26) and the KM collapses in 2023-26 exactly as the stratified rate does. The 0.81 was an artefact of an inconsistent fallback, not a second, more data-efficient estimate.",
   "Episode LOO with the 26-week run-up removed (the blocks the episode bootstrap uses): fixed5 pooled without Oct 2020 - May 2021 + run-up 0.886, 2021-22 0.766 (plain LOO, positives only: 0.897); without Apr-Jul 2025 + run-up the 2023-26 era has NO positive left (the Nov 2024 single-week episode lies inside that run-up), so the 2023-26 AUC of every model is one episode: None.",
-  "Within-era permutation null for fixed5 in 2023-26: {'n': 120, 'real': 0.988, 'nullMedian': 0.3035, 'nullP95': 0.949, 'nullP05': 0.039, 'p': 0.042, 'quotable': True, 'exact': True}; with 120 arrangements the smallest attainable p is 0.008, and the real AUC clears p95 by +0.039.",
-  "Stratified model: pooled AUC 0.635 but era-stratified (within-era pairs only) 0.483: its ranking is cross-era level only. In 2023-26 AUC 0.153; 85% of its forecasts there came from a merged M2 bucket or the global rate (the M2<0 state of 2023 had no training episode at all, so it was scored at the global rate while nothing happened; the Apr-Jul 2025 fall came in a cell rated near the bucket floor). That is era inheritance made visible, not a forecast. KM 1-S(26): pooled 0.663, era-stratified 0.542.",
+  "Within-era permutation null for fixed5 in 2023-26: {'n': 120, 'real': 0.988, 'nullMedian': 0.3045, 'nullP95': 0.949, 'nullP05': 0.039, 'p': 0.042, 'quotable': True, 'exact': True}; with 120 arrangements the smallest attainable p is 0.008, and the real AUC clears p95 by +0.039.",
+  "Stratified model: pooled AUC 0.635 but era-stratified (within-era pairs only) 0.483: its ranking is cross-era level only. In 2023-26 AUC 0.153; 84% of its forecasts there came from a merged M2 bucket or the global rate (the M2<0 state of 2023 had no training episode at all, so it was scored at the global rate while nothing happened; the Apr-Jul 2025 fall came in a cell rated near the bucket floor). That is era inheritance made visible, not a forecast. KM 1-S(26): pooled 0.663, era-stratified 0.542.",
   "Surrogate BTC.D placebos are reported with their rebuilt label's base rate and episode count per draw: the shared matched_rw leaves [0, 100] in most draws (clipped at 99) and its labels have the wrong base rate and episode count, IAAFT labels have about twice the real episode count; only draws whose label process is within 2x of the real one (episodes (6, 24), base (0.13, 0.52)) count, and no p95 is quoted from fewer than 50 such draws. No 'surrogate ceiling' is claimed: for models without a BTC.D-derived input the shifted-target null already is the label-process placebo.",
   "Within-era nulls are dwell-time block permutations of each era's label (episodes and gaps reordered, whole procedure rerun; arrangements {'2019-2020': {'blocks': 10, 'distinctArrangements': 3628800, 'enumerated': False}, '2021-2022': {'blocks': 12, 'distinctArrangements': 479001600, 'enumerated': False}, '2023-2026': {'blocks': 5, 'distinctArrangements': 120, 'enumerated': True}, 'pooled': {'blocks': 25, 'distinctArrangements': '25!', 'enumerated': False}}); the plan's circular shift restricted to 26..n-26 anti-aligns a half-positive era (frozen-prediction medians {'fixed5': {'2019-2020': {'nullMedian': 0.453, 'nullP95': 0.573, 'n': 300}, '2021-2022': {'nullMedian': 0.364, 'nullP95': 0.723, 'n': 300}, '2023-2026': {'nullMedian': 0.373, 'nullP95': 0.8, 'n': 300}}, 'm2only': {'2019-2020': {'nullMedian': 0.428, 'nullP95': 0.67, 'n': 300}, '2021-2022': {'nullMedian': 0.408, 'nullP95': 0.748, 'n': 300}, '2023-2026': {'nullMedian': 0.369, 'nullP95': 0.966, 'n': 300}}}) and is not used. fixed5 beats the permutation p95: 2019-2020 True (p 0.007, n 300), 2021-2022 True (p 0.013, n 300), 2023-2026 True (p 0.042, n 120); m2eth: 2019-2020 True, 2021-2022 False, 2023-2026 False; m2only: 2019-2020 False, 2021-2022 False, 2023-2026 False. The 2023-26 era has 5 blocks (120 arrangements): its p rests on where the single Apr-Jul 2025 episode lands in the ranking.",
   "Decoys: the era-mean decoy (mean of the last 104 known labels) is anti-predictive by construction (AUC {'2019-2020': 0.386, '2021-2022': 0.169, '2023-2026': 0.083}), so claim B and the strong-test margins are also computed against its sign-flipped bound ({'2019-2020': 0.614, '2021-2022': 0.831, '2023-2026': 0.917}) and against a renewal clock (log weeks since the last known positive label, sign learned through the logistic: {'2019-2020': 0.551, '2021-2022': 0.467, '2023-2026': 0.555}); margins as written {'2019-2020': 0.514, '2021-2022': -0.099, '2023-2026': 0.288}, corrected {'2019-2020': 0.291, '2021-2022': -0.099, '2023-2026': 0.071}. The strong test fails on the 2021-22 halving-clock margin either way.",

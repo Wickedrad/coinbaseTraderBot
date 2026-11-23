@@ -1,40 +1,40 @@
 {
   "now": {
-    "asOf": "2026-11-16",
+    "asOf": "2026-11-23",
     "parent": "2016-12-16",
     "progress": 0.476,
     "phase": "base before the waterfall (parent swing 1 of 8)",
-    "dilation": 9.26,
+    "dilation": 9.28,
     "localDilation": 16,
     "map": {
-      "a": -188.47,
+      "a": -188.45,
       "b": 2.5
     },
     "fit": {
-      "r": 0.537,
-      "recentR": -0.101,
+      "r": 0.535,
+      "recentR": -0.1,
       "maePts": 6.32,
-      "recentMaePts": 5.28
+      "recentMaePts": 5.27
     },
-    "btcd": 59.88,
+    "btcd": 59.36,
     "proj": {
-      "d30": 58.81,
-      "d90": 56.84,
-      "d180": 56.68
+      "d30": 58.29,
+      "d90": 56.31,
+      "d180": 56.15
     },
     "nextWaterfall": {
-      "start": "2029-09-03",
-      "end": "2029-12-02",
-      "from": 55.1,
-      "to": 35,
-      "weeksAway": 146.1,
+      "start": "2029-09-11",
+      "end": "2029-12-10",
+      "from": 54.6,
+      "to": 34.5,
+      "weeksAway": 146.2,
       "inside": false
     },
     "low": {
-      "at": "2035-07-18",
-      "btcd": 29.8
+      "at": "2035-07-29",
+      "btcd": 29.3
     },
-    "gateCross": "2027-10-03"
+    "gateCross": "2027-09-04"
   },
   "weekly": [
     {
@@ -3744,14 +3744,23 @@
       "fit": 0.537,
       "recentFit": -0.101,
       "btcd": 59.88
+    },
+    {
+      "asOf": "2026-11-23",
+      "parent": "2016-12-16",
+      "progress": 0.476,
+      "phase": "base before the waterfall (parent swing 1 of 8)",
+      "fit": 0.535,
+      "recentFit": -0.1,
+      "btcd": 59.36
     }
   ],
   "skill": {
     "d30": {
-      "n": 407,
+      "n": 408,
       "maeEngine": 3.51,
       "maeFlat": 1.96,
-      "directionHit": 0.445,
+      "directionHit": 0.446,
       "byFit": {
         "high": {
           "n": 0,
@@ -3762,10 +3771,10 @@
       }
     },
     "d90": {
-      "n": 367,
-      "maeEngine": 6.1,
-      "maeFlat": 3.27,
-      "directionHit": 0.452,
+      "n": 368,
+      "maeEngine": 6.09,
+      "maeFlat": 3.26,
+      "directionHit": 0.454,
       "byFit": {
         "high": {
           "n": 0,
