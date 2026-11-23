@@ -24,6 +24,7 @@ import { pinned, synthModel, synthRequoteDay, writeEventsGz } from './twinSweepS
 import { tmpDir } from './helpers';
 import { depthStudy } from '../research/depthStudy';
 import { synthRecording, writeRecording } from './depthStudySynth';
+import { childExecArgv, childNodeOptions, DEFAULT_CHILD_HEAP_MB, noAnswerMessage, runUnits, UNIT_TMP_PREFIX } from '../research/history/unitPool';
 
 const D0 = Date.UTC(2026, 9, 28);
 const MIN = 60_000;
@@ -1795,9 +1796,11 @@ const READ = ['features-real.json', 'features-requote.json', 'features-depth.jso
 const FAST_ONLY = /^\[twin\] (fast: |depth fill-in: \d+ day\(s\) built in-stream)/;
 /** The full route's own lines that say a file was written (the fast route writes no filled day), and the directory in a line. */
 const FILL_WRITTEN = /^\[twin\] depth fill-in written for \d+ day\(s\)$/;
+/** The timing lines (round S1) of the file route's three stages: seconds only, the fast route prints its own `fast: STEP N s` lines instead. */
+const FILE_ROUTE_TIMING = /^\[twin\] (match (\d{4}-\d{2}-\d{2}: tickers \d+\.\d s, restrict \d+\.\d s, pair \d+\.\d s|took \d+\.\d s \(jobs \d+\))|fill (\d{4}-\d{2}-\d{2}: \d+\.\d s|took \d+\.\d s)|features (\w+ \d{4}-\d{2}-\d{2}: \d+\.\d s|took \d+\.\d s \(jobs \d+\)))$/;
 const sameLines = (full: string[], fast: string[], fullOut: string, fastOut: string) => {
   const norm = (l: string, out: string) => l.split(out).join('OUT');
-  assert.deepEqual(fast.filter((l) => !FAST_ONLY.test(l)).map((l) => norm(l, fastOut)), full.filter((l) => !FILL_WRITTEN.test(l)).map((l) => norm(l, fullOut)));
+  assert.deepEqual(fast.filter((l) => !FAST_ONLY.test(l)).map((l) => norm(l, fastOut)), full.filter((l) => !FILL_WRITTEN.test(l) && !FILE_ROUTE_TIMING.test(l)).map((l) => norm(l, fullOut)));
 };
 
 const bestFileOf = (dir: string, params: Partial<DepthSimParams>) => {
@@ -2469,7 +2472,9 @@ test('the features stage and the fast rows take the real FIT rows from the hando
   // the features stage: handoff + no FIT day files = the files and lines of the stage that read them
   const viaHo = path.join(w.root, 'via-handoff'), linesHo = featuresInto(full, viaHo, noFit, ho);
   for (const f of ['features-real.json', 'features-requote.json', 'features-depth.json', 'real-meta.json', 'real-activity.json', 'real-fit-features.json']) assert.equal(fs.readFileSync(path.join(viaHo, f), 'utf8'), fs.readFileSync(path.join(full, f), 'utf8'), `${f} from the handoff equals the one from the parsed days`);
-  assert.deepEqual(linesHo, fullLines.slice(fullLines.findIndex((l) => /^\[twin\] features real: /.test(l))), 'the stage prints the same lines (the full route\'s features stage is the last of its three)');
+  // (round S1: but for the seconds-only timing lines of the features stage, whose numbers are the run's own)
+  assert.deepEqual(linesHo.filter((l) => !FILE_ROUTE_TIMING.test(l)), fullLines.slice(fullLines.findIndex((l) => /^\[twin\] features real: /.test(l))).filter((l) => !FILE_ROUTE_TIMING.test(l)), 'the stage prints the same lines (the full route\'s features stage is the last of its three)');
+  assert.ok(linesHo.some((l) => /^\[twin\] features took \d+\.\d s \(jobs 1\)$/.test(l)) && linesHo.some((l) => /^\[twin\] features real 2026-11-1\d: \d+\.\d s$/.test(l)), 'the stage still prints its timing lines');
   assert.ok(linesHo.some((l) => /^\[twin\] real 2026-11-12 \(not judged\): /.test(l)) && linesHo.some((l) => /^\[twin\] real follow /.test(l)), 'the fit days\' activity and follow lines come from the handoff');
   // without the handoff the same folder gives a real side with no fit days (the features stage skips a day it has not got), which is what the handoff made up for
   const noHo = path.join(w.root, 'no-handoff'); featuresInto(full, noHo, noFit);
@@ -2899,3 +2904,414 @@ test('a depth_model_run reuse carries the calibration: the reuse step copies the
   assert.match(fs.readFileSync(path.join(tmp, 'build.log'), 'utf8'), /^\[twin\] ERROR: depth_model_run 55: the model has no calibration block/m);
 });
 // ---- R2 end ----
+
+// ---- S1 begin: --jobs for the match and features stages, their timing lines, and the job's time budget (round S1) ----
+// A synthetic world different from the fast route's: FOUR assets in the real days against THREE in the twin (XRP is real only), FIVE judged days (an odd number) and two warm-up
+// days that are also FIT days (as on dev: the day before 11-10 is a fit day), a record of a contract the twin lists only the day before.
+
+const PAR_FIT = ['2026-11-05', '2026-11-06', '2026-11-09'], PAR_JUDGE = ['2026-11-07', '2026-11-08', '2026-11-10', '2026-11-11', '2026-11-12'], PAR_WARM = ['2026-11-06', '2026-11-09'];
+const PAR_J = PAR_JUDGE.join(','), PAR_W = PAR_WARM.join(',');
+/** A contract of the twin's day 11-09 that the twin's day 11-10 does not list: a record of it in the real day 11-10 is kept only through the day-before rule. */
+const CARRIED = 'KXBTC15M-26NOV090600-00';
+const gunzipText = (f: string) => zlib.gunzipSync(fs.readFileSync(f)).toString('utf8');
+const filesUnder = (dir: string): string[] => (fs.readdirSync(dir, { recursive: true }) as string[]).filter((f) => fs.statSync(path.join(dir, f)).isFile()).sort();
+
+interface ParWorld { root: string; real: string; twin: string; modelFile: string }
+async function buildParWorld(o: { days: string[]; twinDays: string[]; carried?: boolean; assets?: string[]; twinAssets?: string[]; windows?: number }): Promise<ParWorld> {
+  const root = tmpDir(), real = path.join(root, 'real15m'), twin = path.join(root, 'replay-src');
+  fs.mkdirSync(real); fs.mkdirSync(twin);
+  const modelFile = path.join(root, 'depth_model.json');
+  fs.writeFileSync(modelFile, JSON.stringify({ ...synthModel({ days: PAR_FIT }), schema: DEPTH_MODEL_SCHEMA }));
+  const lib = readDepthModel(modelFile)!;
+  for (const [i, d] of o.days.entries()) {
+    const raw = path.join(root, `raw-${d}.jsonl.gz`), f = path.join(real, `md-${d}.jsonl.gz`);
+    writeEventsGz(raw, synthRequoteDay({ day: d, assets: o.assets ?? ['BTC', 'ETH', 'SOL', 'XRP'], windows: o.windows ?? 2, seed: 70 + i }));
+    await fillDayFile(raw, f, { how: 'depth' }, lib);
+    if (o.carried && d === '2026-11-10') {
+      const t = Date.parse('2026-11-10T00:00:05Z');
+      fs.writeFileSync(f, zlib.gzipSync(`${JSON.stringify({ t, k: 'book', ticker: CARRIED, bids: [{ price: 0.4, size: 5 }], asks: [{ price: 0.6, size: 5 }], ts: t })}\n${gunzipText(f)}`));
+    }
+    fs.writeFileSync(path.join(real, `meta-${d}.json`), JSON.stringify({ day: d, version: real15mTag(), sha256: sha256Of(f) }));
+    if (o.twinDays.includes(d)) writeEventsGz(path.join(twin, `md-${d}.jsonl.gz`), synthRequoteDay({ day: d, assets: o.twinAssets ?? ['BTC', 'ETH', 'SOL'], windows: o.windows ?? 2, seed: 5 + i }));
+  }
+  return { root, real, twin, modelFile };
+}
+let parWorldP: Promise<ParWorld> | undefined;
+const parWorld = () => (parWorldP ??= buildParWorld({ days: [...PAR_FIT, ...PAR_JUDGE].sort(), twinDays: [...PAR_WARM, ...PAR_JUDGE], carried: true }));
+/** A copy of a world's folders (the days are small) to take days out of or spoil. */
+const copyWorld = (w: ParWorld): ParWorld => { const root = tmpDir(); fs.cpSync(w.real, path.join(root, 'real15m'), { recursive: true }); fs.cpSync(w.twin, path.join(root, 'replay-src'), { recursive: true }); return { ...w, root, real: path.join(root, 'real15m'), twin: path.join(root, 'replay-src') }; };
+
+const parSplit = (out: string) => okCli('--stage', 'split', '--split', 'custom', '--fit-days', PAR_FIT.join(','), '--judge-days', PAR_J, '--warm-days', PAR_W, '--out', out);
+const matchArgs = (w: ParWorld, out: string, jobs: number | string, days = PAR_J, warm = PAR_W) => ['--stage', 'match', '--real', w.real, '--twin', w.twin, '--days', days, '--warm-days', warm, '--jobs', String(jobs), '--out', out];
+const featArgs = (w: ParWorld, out: string, jobs: number | string) => ['--stage', 'features', '--dirs', `real=${out}/real,requote=${out}/requote,depth=${out}/depth`, '--days', PAR_J, '--jobs', String(jobs), '--extra-days', PAR_FIT.join(','), '--extra-dir', w.real, '--real15m', w.real, '--out', out];
+/** The full route with --jobs: split, match, fill, features (the workflow step's arguments). The [twin] lines of the three stages. */
+function parRoute(w: ParWorld, out: string, jobs: number | string): string[] {
+  fs.mkdirSync(out, { recursive: true });
+  parSplit(out);
+  return [
+    ...tw(okCli(...matchArgs(w, out, jobs))),
+    ...tw(okCli('--stage', 'fill', '--src', `${out}/requote`, '--dst', `${out}/depth`, '--how', 'depth', '--depth-model', w.modelFile, '--split-file', `${out}/split.json`)),
+    ...tw(okCli(...featArgs(w, out, jobs))),
+  ];
+}
+const TIMING_DAY = /^\[twin\] (?:match (\d{4}-\d{2}-\d{2}): tickers (\d+\.\d) s, restrict (\d+\.\d) s, pair (\d+\.\d) s|fill (\d{4}-\d{2}-\d{2}): (\d+\.\d) s|features (\w+) (\d{4}-\d{2}-\d{2}): (\d+\.\d) s)$/;
+/** Everything but the timing lines, the path of the run's folder made a name. */
+const untimed = (lines: string[], out: string) => lines.filter((l) => !FILE_ROUTE_TIMING.test(l)).map((l) => l.split(out).join('OUT'));
+/** Every file under both folders the same, to the byte, and the lines the same but for the timing lines. */
+function assertSameRun(a: { out: string; lines: string[] }, b: { out: string; lines: string[] }, what: string) {
+  const fa = filesUnder(a.out);
+  assert.deepEqual(filesUnder(b.out), fa, `${what}: the same files`);
+  for (const f of fa) {
+    assert.ok(fs.readFileSync(path.join(a.out, f)).equals(fs.readFileSync(path.join(b.out, f))), `${what}: ${f} has the same bytes`);
+    if (f.endsWith('.gz')) assert.equal(gunzipText(path.join(b.out, f)), gunzipText(path.join(a.out, f)), `${what}: ${f} decompresses to the same text`);
+  }
+  for (const o of [a.out, b.out]) assert.deepEqual(fs.readdirSync(o).filter((n) => n.startsWith(UNIT_TMP_PREFIX)), [], `${what}: no temp folder is left in ${path.basename(o)}`);
+  assert.deepEqual(untimed(b.lines, b.out), untimed(a.lines, a.out), `${what}: the same lines in the same order but for the timing lines`);
+}
+let parSerialP: Promise<{ out: string; lines: string[] }> | undefined;
+const parSerial = () => (parSerialP ??= parWorld().then((w) => { const out = path.join(tmpDir(), 'serial'); return { out, lines: parRoute(w, out, 1) }; }));
+
+test('match and features with --jobs 3 give the serial route\'s files byte for byte and its lines in its order, on a world of 4 real assets, 5 judged days and 2 warm fit days', async () => {
+  const w = await parWorld(), serial = await parSerial(), par = { out: path.join(tmpDir(), 'par3'), lines: [] as string[] };
+  par.lines = parRoute(w, par.out, 3);
+  assertSameRun(serial, par, 'jobs 3 against jobs 1');
+  // not vacuous: the order of paired.json is [...warm, ...judged] (not sorted, not the order the days finished), every source has lives on every judged day, the real side is not the twin
+  const paired = JSON.parse(fs.readFileSync(path.join(par.out, 'paired.json'), 'utf8')) as Array<{ day: string; both: number; onlyReal15m: number; onlyTwin: number }>;
+  assert.deepEqual(paired.map((p) => p.day), [...PAR_WARM, ...PAR_JUDGE]);
+  assert.ok(paired.every((p) => p.both >= 6 && p.onlyReal15m >= 2), JSON.stringify(paired));
+  const rows = (src: string): Row[] => JSON.parse(fs.readFileSync(path.join(par.out, `features-${src}.json`), 'utf8'));
+  for (const src of ['real', 'requote', 'depth']) { const r = rows(src); assert.ok(r.length >= 30, `${src}: ${r.length} lives`); for (const d of PAR_JUDGE) assert.ok(r.some((x) => x.day === d), `${src} ${d}`); }
+  assert.notDeepEqual(rows('real').map((r) => r.f), rows('depth').map((r) => r.f));
+  const follow = (src: string) => par.lines.filter((l) => l.startsWith(`[twin] ${src} follow `));
+  for (const src of ['real', 'requote', 'depth']) assert.ok(follow(src).length >= 2 && follow(src).every((l) => /\d+ moves, corr -?[\d.]+/.test(l)), `${src} has follow lines`);
+  for (const d of PAR_FIT) assert.ok(par.lines.some((l) => l.startsWith(`[twin] real ${d} (not judged): `)), `the fit day ${d} has its activity line`);
+  assert.ok(par.lines.some((l) => /^\[twin\] real 2026-11-10: \d+ lives/.test(l)));
+  // the day-before rule is in force in the children: a record of a contract only the twin's 11-09 lists is in the restricted 11-10 and in no other day
+  assert.ok(gunzipText(path.join(par.out, 'real/md-2026-11-10.jsonl.gz')).includes(CARRIED), 'the carried contract is kept in 11-10');
+  for (const d of PAR_JUDGE.filter((x) => x !== '2026-11-10')) assert.ok(!gunzipText(path.join(par.out, `real/md-${d}.jsonl.gz`)).includes(CARRIED), `and not in ${d}`);
+  // the timing lines (f): there, in seconds, a day each, and the totals say how many processes ran
+  const timing = (lines: string[]) => lines.filter((l) => TIMING_DAY.test(l));
+  for (const [label, r] of [['serial', serial], ['jobs 3', par]] as const) {
+    const t = timing(r.lines), days = (k: number) => t.map((l) => TIMING_DAY.exec(l)!).filter((m) => m[k] !== undefined);
+    assert.deepEqual(days(1).map((m) => m[1]).sort(), [...PAR_WARM, ...PAR_JUDGE].sort(), `${label}: a match line per day`);
+    assert.deepEqual(days(5).map((m) => m[5]).sort(), [...PAR_WARM, ...PAR_JUDGE].sort(), `${label}: a fill line per requote day (the warm days are filled too)`);
+    assert.deepEqual(days(7).map((m) => `${m[7]} ${m[8]}`).sort(), ['depth', 'real', 'requote'].flatMap((s) => PAR_JUDGE.map((d) => `${s} ${d}`)).sort(), `${label}: a features line per source and judged day`);
+    const J = label === 'serial' ? 1 : 3;
+    assert.equal(r.lines.filter((l) => new RegExp(`^\\[twin\\] match took \\d+\\.\\d s \\(jobs ${J}\\)$`).test(l)).length, 1, `${label}: match took ... (jobs ${J})`);
+    assert.equal(r.lines.filter((l) => new RegExp(`^\\[twin\\] features took \\d+\\.\\d s \\(jobs ${J}\\)$`).test(l)).length, 1, `${label}: features took ... (jobs ${J})`);
+    assert.equal(r.lines.filter((l) => /^\[twin\] fill took \d+\.\d s$/.test(l)).length, 1);
+    assert.ok(Number.isFinite(Number(/ (\d+\.\d) s/.exec(timing(r.lines)[0])![1])));
+  }
+  // the order of a day's own lines: the match lines of the days in [...warm, ...judged] order
+  assert.deepEqual(par.lines.filter((l) => /^\[twin\] 2026-11-\d\d: contracts real/.test(l)).map((l) => l.slice(7, 17)), [...PAR_WARM, ...PAR_JUDGE]);
+});
+
+test('--jobs larger than the number of units runs as many as there are units and gives the same files; a bad --jobs is refused before anything is read', async () => {
+  const w = await parWorld(), serial = await parSerial(), big = { out: path.join(tmpDir(), 'par16'), lines: [] as string[] };
+  big.lines = parRoute(w, big.out, 16);
+  assertSameRun(serial, big, 'jobs 16 against jobs 1');
+  assert.ok(big.lines.some((l) => /^\[twin\] match took \d+\.\d s \(jobs 7\)$/.test(l)), '7 days: 7 processes at most');
+  assert.ok(big.lines.some((l) => /^\[twin\] features took \d+\.\d s \(jobs 15\)$/.test(l)), '3 sources x 5 days: 15 at most');
+  const out = tmpDir();
+  for (const bad of ['0', 'x', '-2', '65', '1.5']) {
+    const r = twinCli(...matchArgs(w, out, bad)); assert.notEqual(r.status, 0, bad); assert.match(r.stderr, /^\[twin\] ERROR: --jobs must be a whole number from 1 to 64 \(got "/m, bad);
+    assert.ok(!fs.existsSync(path.join(out, 'paired.json')) && !fs.existsSync(path.join(out, 'real')), 'nothing was read or written');
+    assert.notEqual(twinCli(...featArgs(w, out, bad)).status, 0);
+  }
+  // no --jobs at all is the serial route
+  const none = twinCli(...matchArgs(w, tmpDir(), 1).filter((a, i, all) => a !== '--jobs' && all[i - 1] !== '--jobs'));
+  assert.equal(none.status, 0, none.stderr); assert.match(none.stdout, /^\[twin\] match took \d+\.\d s \(jobs 1\)$/m);
+});
+
+test('days a run lacks are left out in their place of the order (a warm day with no twin, a warm day with no real recording), the same in the serial and the parallel route', async () => {
+  const w = copyWorld(await parWorld());
+  fs.rmSync(path.join(w.twin, 'md-2026-11-06.jsonl.gz')); fs.rmSync(path.join(w.real, 'md-2026-11-09.jsonl.gz'));
+  const run = (jobs: number) => { const out = path.join(tmpDir(), `left-${jobs}`); fs.mkdirSync(out); parSplit(out); return { out, lines: tw(okCli(...matchArgs(w, out, jobs))) }; };
+  const a = run(1), b = run(4);
+  assertSameRun(a, b, 'left-out days');
+  const first = b.lines.filter((l) => /left out|contracts real/.test(l));
+  assert.deepEqual(first.map((l) => l.slice(7, 17)), [...PAR_WARM, ...PAR_JUDGE]);
+  assert.match(first[0], /^\[twin\] 2026-11-06: no history twin; left out$/); assert.match(first[1], /^\[twin\] 2026-11-09: no real recording ; left out$/);
+  assert.deepEqual((JSON.parse(fs.readFileSync(path.join(b.out, 'paired.json'), 'utf8')) as Array<{ day: string }>).map((p) => p.day), PAR_JUDGE);
+  assert.equal(b.lines.filter((l) => /^\[twin\] match 2026-11-0[69]: tickers/.test(l)).length, 0, 'a day left out has no timing line');
+  assert.ok(b.lines.some((l) => /^\[twin\] match took \d+\.\d s \(jobs 4\)$/.test(l)));
+  // a JUDGED day lacking is an error after the lines, in both routes, and paired.json is the one the serial route writes
+  fs.rmSync(path.join(w.twin, 'md-2026-11-11.jsonl.gz'));
+  for (const jobs of [1, 3]) { const out = path.join(tmpDir(), `lost-${jobs}`); fs.mkdirSync(out); parSplit(out); const r = twinCli(...matchArgs(w, out, jobs)); assert.notEqual(r.status, 0); assert.match(r.stderr, /^\[twin\] ERROR: judged day\(s\) without a real recording or a twin: 2026-11-11$/m); }
+});
+
+/** The pids of every process whose command line holds `needle` (Linux only: undefined elsewhere). */
+const processesWith = (needle: string): string[] | undefined => {
+  if (!fs.existsSync('/proc/self/cmdline')) return undefined;
+  return fs.readdirSync('/proc').filter((p) => /^\d+$/.test(p) && p !== String(process.pid)).filter((p) => { try { return fs.readFileSync(`/proc/${p}/cmdline`, 'utf8').includes(needle); } catch { return false; } });
+};
+
+test('a failing unit (a corrupt day file) fails the stage with the child\'s own message, leaves no paired.json, no features file, no temp folder and no child behind', async () => {
+  const w = copyWorld(await parWorld()), out = path.join(tmpDir(), 'bad-match');
+  fs.mkdirSync(out); parSplit(out);
+  fs.writeFileSync(path.join(w.real, 'md-2026-11-10.jsonl.gz'), 'this is not gzip, and has no recording in it');
+  const r = twinCli(...matchArgs(w, out, 3));
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /^\[twin\] ERROR: match 2026-11-10: incorrect header check$/m, 'the child\'s own message, with the stage and the unit');
+  assert.ok(!fs.existsSync(path.join(out, 'paired.json')), 'no partial paired.json');
+  assert.deepEqual(fs.readdirSync(out).filter((n) => n.startsWith(UNIT_TMP_PREFIX)), [], 'the temp folder is removed');
+  assert.ok(!/contracts real/.test(r.stdout.split('\n').filter((l) => /2026-11-10/.test(l)).join('\n')), 'the failed day printed no mechanics');
+  const strays = processesWith(out); if (strays) assert.deepEqual(strays, [], 'no child process is left behind');
+  // the serial route fails on the same file too (it never printed a [twin] ERROR line for it: the stream error is uncaught there)
+  const s = twinCli(...matchArgs(w, path.join(tmpDir(), 'bad-serial'), 1)); assert.notEqual(s.status, 0);
+  // features: one (source, day) of 15 is corrupt: the whole stage fails, nothing of it is written, nobody is left running
+  const good = await parSerial(), fout = path.join(tmpDir(), 'bad-features'); fs.cpSync(good.out, fout, { recursive: true });
+  for (const f of fs.readdirSync(fout).filter((x) => x.startsWith('features-') || x === 'real-meta.json')) fs.rmSync(path.join(fout, f));
+  fs.writeFileSync(path.join(fout, 'depth/md-2026-11-11.jsonl.gz'), 'not gzip either');
+  const fr = twinCli(...featArgs(w, fout, 3));
+  assert.notEqual(fr.status, 0); assert.match(fr.stderr, /^\[twin\] ERROR: features depth 2026-11-11: incorrect header check$/m);
+  assert.deepEqual(fs.readdirSync(fout).filter((n) => n.startsWith('features-') || n.startsWith(UNIT_TMP_PREFIX)), [], 'no features file, no temp folder');
+  const fs2 = processesWith(fout); if (fs2) assert.deepEqual(fs2, []);
+});
+
+test('the blind rules hold with --jobs: a confirm-named split prints no per-day mechanics and no tables (only the timing lines, seconds), the files are the serial route\'s, and a dev split that names a confirm day is refused before a child starts', async () => {
+  const days = ['2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20'];
+  const w = await buildParWorld({ days, twinDays: days, assets: ['BTC', 'ETH', 'XRP'], windows: 2 });
+  const CJ = CONFIRM_DAYS.join(','), run = (jobs: number) => {
+    const out = path.join(tmpDir(), `confirm-${jobs}`); fs.mkdirSync(out);
+    okCli('--stage', 'split', '--split', 'confirm', '--warm-days', '2026-11-17', '--out', out);
+    const m = tw(okCli('--stage', 'match', '--real', w.real, '--twin', w.twin, '--days', CJ, '--warm-days', '2026-11-17', '--jobs', String(jobs), '--out', out));
+    const f = tw(okCli('--stage', 'features', '--dirs', `real=${out}/real,requote=${out}/requote`, '--days', CJ, '--jobs', String(jobs), '--out', out));
+    return { out, lines: [...m, ...f] };
+  };
+  const a = run(1), b = run(3);
+  assertSameRun(a, b, 'confirm split');
+  for (const r of [a, b]) {
+    assert.ok(!r.lines.some((l) => /^\[twin\] 2026-11-\d\d: /.test(l)), 'no per-day mechanics line');
+    assert.ok(!r.lines.some((l) => /follow|\(not judged\)|lives, trades\/min/.test(l)), 'no follow or activity table');
+    assert.equal(r.lines.filter((l) => /^\[twin\] matched 3 of 3 judged day\(s\): /.test(l)).length, 1);
+    assert.equal(r.lines.filter((l) => /^\[twin\] match 2026-11-\d\d: tickers /.test(l)).length, 4, 'timing lines are printed on every split');
+    assert.equal(r.lines.filter((l) => /^\[twin\] features (real|requote) 2026-11-\d\d: \d+\.\d s$/.test(l)).length, 6);
+  }
+  assert.ok(!fs.existsSync(path.join(b.out, 'real-meta.json')), 'a blind run keeps no real side');
+  // a dev-named split on record, a confirm day asked for: refused, in the parent, with --jobs 3, before any day is read
+  const out = tmpDir(); okCli('--stage', 'split', '--split', 'dev', '--out', out);
+  const r = twinCli('--stage', 'match', '--real', w.real, '--twin', w.twin, '--days', '2026-11-18', '--jobs', '3', '--out', out);
+  assert.notEqual(r.status, 0); assert.match(r.stderr, /^\[twin\] ERROR: the confirm days \(2026-11-18\) are read only through split=confirm/m);
+  assert.ok(!fs.existsSync(path.join(out, 'paired.json')) && !fs.existsSync(path.join(out, 'real')), 'nothing was made');
+  const f = twinCli('--stage', 'features', '--dirs', `real=${w.real}`, '--days', '2026-11-18', '--jobs', '3', '--out', out); assert.notEqual(f.status, 0); assert.match(f.stderr, /confirm days/);
+});
+
+// The pool itself (research/history/unitPool.ts), with a tiny child (tests/unitPoolChild.ts) instead of the stages.
+const POOL_CHILD = path.join(ROOT, 'tests/unitPoolChild.ts');
+const poolOpts = (dir: string, jobs: number, more: object = {}) => ({ script: POOL_CHILD, dir, label: 'test', jobs, execArgv: ['--import', 'tsx'], ...more });
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test('the pool runs each unit in a child process, at most `jobs` at once, gives the results in the units\' order, calls back once per unit, and two units that must meet only meet with two jobs', async () => {
+  const dir = tmpDir(), seen: number[] = [];
+  const res = await runUnits<{ id: string; n: number; pid: number }>([0, 1, 2, 3, 4].map((n) => ({ id: `u${n}`, spec: { kind: 'echo', n, ms: n === 0 ? 800 : 0 } })), { ...poolOpts(dir, 2), onResult: (i: number) => seen.push(i) });
+  assert.deepEqual(res.map((r) => [r.id, r.n]), [['u0', 0], ['u1', 2], ['u2', 4], ['u3', 6], ['u4', 8]], 'in the order of the units, not of the answers');
+  assert.deepEqual([...seen].sort(), [0, 1, 2, 3, 4], 'one callback per unit');
+  assert.equal(new Set(res.map((r) => r.pid)).size, 5); assert.ok(res.every((r) => r.pid !== process.pid), 'a process each, none of them this one');
+  assert.deepEqual(fs.readdirSync(dir), [], 'the temp folder is gone');
+  const track = await runUnits<{ n: number }>([...Array(6).keys()].map((n) => ({ id: `t${n}`, spec: { kind: 'track', dir, ms: 300 } })), poolOpts(dir, 2));
+  assert.ok(track.every((t) => t.n >= 1 && t.n <= 2), `never more than 2 at once: ${JSON.stringify(track)}`);
+  // concurrency is real: two units that wait for each other's marker meet with 2 jobs (they cannot with 1)
+  const meetSpec = (d: string, wait: number) => [{ id: 'a', spec: { kind: 'meet', dir: d, me: 'a', other: 'b', wait } }, { id: 'b', spec: { kind: 'meet', dir: d, me: 'b', other: 'a', wait } }];
+  const two = tmpDir(), one = tmpDir();
+  assert.deepEqual((await runUnits<{ met: boolean }>(meetSpec(two, 20_000), poolOpts(tmpDir(), 2))).map((r) => r.met), [true, true]);
+  assert.deepEqual((await runUnits<{ met: boolean }>(meetSpec(one, 1500), poolOpts(tmpDir(), 1))).map((r) => r.met), [false, true], 'with one job the first waits alone, the second then finds its marker');
+  assert.deepEqual(await runUnits([], poolOpts(dir, 3)), [], 'no units, no children');
+});
+
+test('the first failed unit rejects the pool with its own first line after every other child is gone; a child that dies with no answer, and a corrupt day (a stream error), are failures too; the temp folder always goes', async () => {
+  const dir = tmpDir(), pids = [path.join(dir, 'p1'), path.join(dir, 'p2')];
+  await assert.rejects(runUnits([{ id: 'h1', spec: { kind: 'hang', pidFile: pids[0] } }, { id: 'h2', spec: { kind: 'hang', pidFile: pids[1] } }, { id: 'bad', spec: { kind: 'fail', msg: 'boom: a plain message', waitFor: pids } }, { id: 'later', spec: { kind: 'echo', n: 1 } }], poolOpts(dir, 3)),
+    (e: Error) => { assert.equal(e.message, 'test bad: boom: a plain message', 'the child\'s own first line, with the stage and the unit'); return true; });
+  for (const f of pids) assert.ok(!alive(Number(fs.readFileSync(f, 'utf8'))), 'a child that was still running when the failure came is gone');
+  assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith(UNIT_TMP_PREFIX)), []);
+  await assert.rejects(runUnits([{ id: 'x', spec: { kind: 'exit', code: 3 } }], poolOpts(dir, 1)), /^Error: test x: its process exited with code 3 and left no result$/);
+  const garbage = path.join(dir, 'g.jsonl.gz'); fs.writeFileSync(garbage, 'nope');
+  await assert.rejects(runUnits([{ id: 'g', spec: { kind: 'read', file: garbage } }], poolOpts(dir, 1)), /^Error: test g: incorrect header check$/);
+  await assert.rejects(runUnits([{ id: 'k', spec: { kind: 'nonsense' } }], poolOpts(dir, 1)), /test k: unknown unit kind nonsense/);
+  assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith(UNIT_TMP_PREFIX)), []);
+  // a temp folder a killed run left behind is cleared by the next pool (and nothing else in the folder is touched)
+  fs.mkdirSync(path.join(dir, `${UNIT_TMP_PREFIX}old-1`)); fs.writeFileSync(path.join(dir, `${UNIT_TMP_PREFIX}old-1`, 'x'), 'x'); fs.writeFileSync(path.join(dir, 'keep.txt'), 'k');
+  await runUnits([{ id: 'e', spec: { kind: 'echo', n: 1 } }], poolOpts(dir, 1));
+  assert.ok(!fs.existsSync(path.join(dir, `${UNIT_TMP_PREFIX}old-1`)) && fs.existsSync(path.join(dir, 'keep.txt')));
+});
+
+test('a child that dies of memory says so in words a fresh reader can act on: node reports a heap abort as code null, signal SIGABRT (never 134) and the kernel\'s killer as SIGKILL; the hint names TWIN_CHILD_HEAP_MB, the step that sets it, and the bound jobs x heap', async () => {
+  const STEP = 'the step "Match, fill in, and describe every contract both ways" of history-twin.yml';
+  // the pure message: both shapes of heap exhaustion, both shapes of a kill, and no guess for an ordinary exit
+  const abort = noAnswerMessage(null, 'SIGABRT', 3072, 4), viaShell = noAnswerMessage(134, null, 3072, 4);
+  assert.equal(abort, `exited with code null (signal SIGABRT) and left no result (node ran out of memory at the child heap TWIN_CHILD_HEAP_MB = 3072 MB, set in the env of ${STEP}, so changing it is a workflow edit; 4 job(s) x 3072 MB; jobs x heap must stay under about 12 GB of the runner's 16 GB)`);
+  assert.equal(viaShell, `exited with code 134 and left no result (node ran out of memory at the child heap TWIN_CHILD_HEAP_MB = 3072 MB, set in the env of ${STEP}, so changing it is a workflow edit; 4 job(s) x 3072 MB; jobs x heap must stay under about 12 GB of the runner's 16 GB)`);
+  for (const m of [noAnswerMessage(null, 'SIGKILL', 3072, 4), noAnswerMessage(137, null, 3072, 4)]) {
+    assert.match(m, /^exited with code (null \(signal SIGKILL\)|137) and left no result \(killed from outside, most likely by the kernel's out-of-memory killer because the runner's memory ran out; TWIN_CHILD_HEAP_MB = 3072 MB is set in /);
+    assert.ok(m.includes(STEP) && m.includes('jobs x heap must stay under about 12 GB of the runner\'s 16 GB'), m);
+  }
+  assert.equal(noAnswerMessage(3, null, 3072, 4), 'exited with code 3 and left no result', 'an ordinary exit gets no guess');
+  assert.equal(noAnswerMessage(null, 'SIGTERM', 3072, 4), 'exited with code null (signal SIGTERM) and left no result');
+  // the real thing: a child with a tiny heap that fills it, and a child that is SIGKILLed, through the pool
+  const dir = tmpDir();
+  await assert.rejects(runUnits([{ id: 'm1', spec: { kind: 'oom' } }], poolOpts(dir, 1, { heapMb: 32 })),
+    (e: Error) => { assert.equal(e.message, `test m1: its process ${noAnswerMessage(null, 'SIGABRT', 32, 1)}`); assert.match(e.message, /exited with code null \(signal SIGABRT\) and left no result \(node ran out of memory at the child heap TWIN_CHILD_HEAP_MB = 32 MB, set in the env of the step "Match, fill in/); return true; });
+  await assert.rejects(runUnits([{ id: 'k1', spec: { kind: 'selfkill' } }], poolOpts(dir, 1)),
+    (e: Error) => { assert.equal(e.message, `test k1: its process ${noAnswerMessage(null, 'SIGKILL', 3072, 1)}`); assert.match(e.message, /^test k1: its process exited with code null \(signal SIGKILL\) and left no result \(killed from outside, most likely by the kernel's out-of-memory killer/); return true; });
+  assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith(UNIT_TMP_PREFIX)), [], 'the temp folder is gone');
+  // the default heap in the pool, the heap in the workflow and the step the message names are the same number and step
+  const wfText = fs.readFileSync(path.join(ROOT, '.github/workflows/history-twin.yml'), 'utf8');
+  assert.ok(wfText.includes('- name: Match, fill in, and describe every contract both ways'), 'the step the message names exists');
+  assert.equal(wfText.match(/^\s+TWIN_CHILD_HEAP_MB: '(\d+)'$/m)?.[1], String(DEFAULT_CHILD_HEAP_MB), 'the pool\'s default heap is the workflow step\'s');
+});
+
+test('a SIGTERM to the parent (the workflow\'s timeout) takes its children with it and removes the temp folder', { skip: fs.existsSync('/proc/self/cmdline') ? false : 'needs /proc' }, async () => {
+  const dir = tmpDir(), pids = [path.join(dir, 'p1'), path.join(dir, 'p2')], { spawn } = await import('node:child_process');
+  const parent = spawn(process.execPath, ['--import', 'tsx', path.join(ROOT, 'tests/unitPoolParent.ts'), dir, pids[0], pids[1]], { stdio: 'ignore' });
+  const exited = new Promise<number | null>((ok) => parent.once('exit', (code, sig) => ok(code ?? (sig ? 128 : null))));
+  for (let i = 0; i < 800 && !pids.every((f) => fs.existsSync(f)); i++) await new Promise((ok) => setTimeout(ok, 25));
+  assert.ok(pids.every((f) => fs.existsSync(f)), 'both children started');
+  const kids = pids.map((f) => Number(fs.readFileSync(f, 'utf8')));
+  parent.kill('SIGTERM');
+  assert.equal(await exited, 143);
+  for (let i = 0; i < 200 && kids.some(alive); i++) await new Promise((ok) => setTimeout(ok, 25));
+  assert.deepEqual(kids.filter(alive), [], 'no child is left');
+  assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith(UNIT_TMP_PREFIX)), []);
+});
+
+test('a child gets its own heap and is its parent\'s child: the parent\'s heap flag is replaced, its other options and the node arguments (`--import tsx`) stay, the test runner\'s flags go', async () => {
+  assert.equal(childNodeOptions('--max-old-space-size=12288', 3072), '--max-old-space-size=3072');
+  assert.equal(childNodeOptions('--foo --max-old-space-size 12288 --bar=1 --max_old_space_size=1', 3072), '--foo --bar=1 --max-old-space-size=3072');
+  assert.equal(childNodeOptions(undefined, 3072), '--max-old-space-size=3072');
+  assert.deepEqual(childExecArgv(['--import', 'tsx', '--test', '--test-name-pattern', 'x y', '--test-reporter=tap', '--inspect-brk=9229', '--watch', '--max-old-space-size=100']), ['--import', 'tsx', '--max-old-space-size=100']);
+  const [r] = await runUnits<{ heap: string; ppid: number }>([{ id: 'e', spec: { kind: 'env' } }], poolOpts(tmpDir(), 1, { env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=12288' }, heapMb: 3072 }));
+  assert.equal(r.heap, '--max-old-space-size=3072'); assert.equal(r.ppid, process.pid);
+  assert.deepEqual(childExecArgv(['--import', 'tsx']), ['--import', 'tsx']);
+});
+
+// The job's time budget: the shell functions of .github/scripts/twin-lib.sh, with a fake clock and with the real `timeout`.
+const LIB = path.join(ROOT, '.github/scripts/twin-lib.sh');
+const budgetRun = (script: string, env: Record<string, string> = {}, tmp = tmpDir()) => bash(`set -euo pipefail\nsource ${LIB}\n${script}`, { RUNNER_TEMP: tmp, ...env }, ROOT);
+
+test('the time budget is the job limit less the time used (from the job clock), the slack and the reserve: a dev step and a confirm step (7 FIT days, a longer fit and calibration first) start at different times and get different budgets, and the reserve is never spent', () => {
+  const syntax = spawnSync('bash', ['-n', LIB], { encoding: 'utf8' });
+  assert.equal(syntax.status, 0, `bash -n twin-lib.sh: ${syntax.stderr}`);
+  const NOW = 1_800_000_000, LIMIT = 340 * 60, RESERVE = 25 * 60, SLACK = 120;
+  const left = (usedS: number, env: Record<string, string> = {}) => { const r = budgetRun(`twin_now() { echo ${NOW}; }\ntwin_seconds_left`, { JOB_START: String(NOW - usedS), ...env }); assert.equal(r.status, 0, r.stderr); return Number(r.stdout.trim()); };
+  assert.equal(left(0), LIMIT - RESERVE - SLACK, 'a job that has just begun: 340 min less 25 less the 2 minutes of slack');
+  // GUESSES of the minutes used before the step (RUNBOOK 5): dev = set-up 5 + depth fit 26 + calibration 22; confirm = set-up 5 + fit of 7 days ~60 + calibration ~51 + the 7 days' real FIT rows ~35
+  const dev = (5 + 26 + 22) * 60, confirm = (5 + 60 + 51 + 35) * 60;
+  assert.equal(left(dev), LIMIT - RESERVE - SLACK - dev); assert.equal(left(confirm), LIMIT - RESERVE - SLACK - confirm);
+  assert.ok(left(confirm) < left(dev) && left(confirm) > 0 && left(dev) > 3 * 3600, `dev ${left(dev)} s, confirm ${left(confirm)} s: both positive, the confirm one smaller`);
+  for (const used of [0, dev, confirm, 5 * 3600]) assert.equal(left(used) + used + SLACK + RESERVE, LIMIT, 'what is used, the slack, the reserve and the budget are the job limit, to the second');
+  assert.equal(left(0, { TWIN_RESERVE_MIN: '40' }), LIMIT - 40 * 60 - SLACK, 'the reserve and the limit come from the environment'); assert.equal(left(0, { TWIN_JOB_LIMIT_MIN: '60', TWIN_RESERVE_MIN: '5', TWIN_CLOCK_SLACK_S: '0' }), 55 * 60);
+  assert.ok(left(LIMIT - RESERVE - SLACK + 1) < 0 && left(LIMIT - RESERVE - SLACK) === 0, 'at the end of the budget it is 0, past it negative');
+  // no clock: assumed just begun, with a warning in the log and on stderr
+  const tmp = tmpDir(), noClock = budgetRun(`twin_now() { echo ${NOW}; }\ntwin_seconds_left`, { JOB_START: '' }, tmp);
+  assert.equal(Number(noClock.stdout.trim()), LIMIT - RESERVE); assert.match(noClock.stderr, /\[twin\] WARNING: the job clock \(JOB_START\) is not set/); assert.match(fs.readFileSync(path.join(tmp, 'build.log'), 'utf8'), /WARNING: the job clock/);
+  assert.equal(Number(budgetRun(`twin_now() { echo ${NOW}; }\ntwin_seconds_left`, { JOB_START: 'soon' }).stdout.trim()), LIMIT - RESERVE, 'a clock that is not a number is no clock');
+  // with no time left the command is not started at all (a `timeout 0` would let it run without a limit)
+  const ran = path.join(tmp, 'ran'), none = budgetRun(`twin_now() { echo ${NOW}; }\ntwin_budgeted features 4 bash -c 'touch ${ran}'`, { JOB_START: String(NOW - 6 * 3600) }, tmp);
+  assert.equal(none.status, 1); assert.ok(!fs.existsSync(ran), 'the command did not run');
+  const log = fs.readFileSync(path.join(tmp, 'build.log'), 'utf8');
+  assert.match(log, /^\[twin\] ERROR: features was cut at the job's time budget after 0 s \(jobs 4\); the rest of this run was not built \(it was not started: no time was left for it\)$/m);
+  assert.match(log, /^\[twin\] time budget: features may run up to -\d+ s /m);
+});
+
+test('twin_budgeted: a command that outlives its budget is cut by timeout and the step ends non-zero with the cut line in the log; one that fails or finishes is passed through, its [twin] lines kept in the log and printed', () => {
+  const tmp = tmpDir(), log = path.join(tmp, 'build.log');
+  const NOW = Math.floor(Date.now() / 1000), LIMIT = 340 * 60, RESERVE = 25 * 60, SLACK = 120;
+  const startWith = (leftS: number) => String(NOW - (LIMIT - RESERVE - SLACK - leftS)); // JOB_START that leaves `leftS` seconds at NOW
+  // cut: 3 seconds left, a command that prints a timing line and then sleeps 60 s
+  const t0 = Date.now();
+  const cut = budgetRun(`twin_budgeted match 4 bash -c 'echo "[twin] match 2026-11-13: tickers 1.0 s, restrict 2.0 s, pair 3.0 s"; echo "noise that is not a twin line"; sleep 60'; echo "not reached"`, { JOB_START: startWith(3) }, tmp);
+  assert.ok(Date.now() - t0 < 30_000, 'cut in seconds, not after the sleep');
+  assert.equal(cut.status, 1); assert.ok(!/not reached/.test(cut.stdout), 'the step stops');
+  const text = fs.readFileSync(log, 'utf8');
+  assert.match(text, /^\[twin\] match 2026-11-13: tickers 1\.0 s, restrict 2\.0 s, pair 3\.0 s$/m, 'what it printed before the cut is in the log');
+  assert.match(text, /^\[twin\] ERROR: match was cut at the job's time budget after [3-9] s \(jobs 4\); the rest of this run was not built$/m);
+  assert.match(text, /^\[twin\] time budget: match may run up to [2-3] s /m);
+  assert.ok(text.indexOf('tickers 1.0') < text.indexOf('was cut'), 'the progress comes before the cut line');
+  assert.match(cut.stdout, /^\[twin\] match 2026-11-13: tickers/m, 'the [twin] lines are on the step\'s output'); assert.ok(!/noise that is not a twin line/.test(cut.stdout), 'the rest only in the log file'); assert.match(text, /noise that is not a twin line/);
+  assert.match(cut.stdout, /^::error::match was cut at the job's time budget/m);
+  // passed through: exit 0, exit 7 (the step's own status), and a kill that is not the budget's (137 long before the limit) is not called a cut
+  fs.rmSync(log);
+  const ok = budgetRun(`twin_budgeted fill 1 bash -c 'echo "[twin] fill 2026-11-13: 0.1 s"; exit 0'; echo "after=$?"`, { JOB_START: startWith(600) }, tmp);
+  assert.equal(ok.status, 0, ok.stderr); assert.match(ok.stdout, /after=0/); assert.match(ok.stdout, /^\[twin\] fill 2026-11-13: 0\.1 s$/m);
+  const bad = budgetRun(`twin_budgeted features 2 bash -c 'echo "[twin] ERROR: stage said no"; exit 7'; echo "not reached"`, { JOB_START: startWith(600) }, tmp);
+  assert.equal(bad.status, 7); assert.ok(!/not reached/.test(bad.stdout)); assert.ok(!/was cut/.test(fs.readFileSync(log, 'utf8')));
+  assert.match(fs.readFileSync(log, 'utf8'), /^\[twin\] ERROR: stage said no$/m);
+  const oom = budgetRun(`twin_budgeted features 2 bash -c 'kill -9 $$'; echo "not reached"`, { JOB_START: startWith(600) }, tmp);
+  assert.equal(oom.status, 137); assert.ok(!/was cut/.test(fs.readFileSync(log, 'utf8')), 'killed at once, with 10 minutes left: not the budget');
+  // the shell options of the step survive the call (set -e is still on after it)
+  assert.equal(budgetRun(`twin_budgeted fill 1 true; false; echo "survived"`, { JOB_START: startWith(600) }, tmp).stdout.includes('survived'), false, 'set -e is back on');
+});
+
+const exprText = (script: string) => script.replace(/\$\{\{ github\.run_id \}\}/g, '77').replace(/\$\{\{ github\.repository \}\}/g, 'o/r').replace(/\$\{\{ github\.sha \}\}/g, 'abc').replace(/\$\{\{ job\.status \}\}/g, 'failure').replace(/\$\{\{[^}]*\}\}/g, 'X');
+
+test('the build job\'s time budget is wired: the limit and reserve are the job\'s own numbers, every heavy command runs under twin_budgeted with --jobs capped at 4, the steps that run after a cut have limits that fit the reserve, and they tolerate a run with no files', { skip: hasYaml ? false : 'python3 with PyYAML is not installed here' }, () => {
+  const { jobs } = yamlDoc(), build = jobs.build, steps = build.steps as Array<{ name?: string; if?: string; 'timeout-minutes'?: number; uses?: string; env?: Record<string, string>; run?: string }>;
+  assert.equal(build['timeout-minutes'], 340, 'the job limit is unchanged'); assert.equal(build.env.TWIN_JOB_LIMIT_MIN, String(build['timeout-minutes']), 'the budget\'s limit is the job\'s timeout-minutes'); assert.equal(build.env.TWIN_RESERVE_MIN, '25');
+  const lib = fs.readFileSync(LIB, 'utf8'); assert.ok(lib.includes('${TWIN_JOB_LIMIT_MIN:-340}') && lib.includes('${TWIN_RESERVE_MIN:-25}') && lib.includes('${TWIN_CLOCK_SLACK_S:-120}'), 'the library\'s defaults are the same numbers');
+  const clock = steps.findIndex((x) => /^The job's clock/.test(x.name ?? '')), match = steps.findIndex((x) => /^Match, fill in/.test(x.name ?? ''));
+  assert.ok(clock >= 0 && clock < match && /JOB_START=\$\(date \+%s\)" >> "\$GITHUB_ENV"/.test(steps[clock].run!), 'the job clock is set before the step');
+  const run = steps[match].run!, cmds = run.split('\n').filter((l) => /research\/historyTwin\.ts/.test(l));
+  assert.equal(cmds.length, 4, 'match, fill, the lag arms\' fill, features'); assert.ok(cmds.every((l) => /^\s*twin_budgeted (match|fill|features) /.test(l)), `no heavy command outside the budget:\n${cmds.join('\n')}`);
+  assert.deepEqual(cmds.map((l) => /twin_budgeted (\w+) (\S+)/.exec(l)!.slice(1, 3).join(' ')), ['match "$J"', 'fill 1', 'fill 1', 'features "$J"']);
+  assert.ok(/--stage match [^\n]*--jobs "\$J"/.test(cmds[0]) && /--stage features [^\n]*--jobs "\$J"/.test(cmds[3]) && !/--jobs/.test(cmds[1] + cmds[2]), '--jobs on match and features, not on the serial fill');
+  assert.ok(/source \.github\/scripts\/twin-lib\.sh/.test(run) && /J=\$\(nproc\); \[ "\$J" -le 4 \] \|\| J=4; \[ "\$J" -ge 1 \] \|\| J=1/.test(run), 'the jobs are the cores, 1 to 4');
+  assert.equal(steps[match].env!.TWIN_CHILD_HEAP_MB, '3072', 'a heap for each child');
+  // the steps after the stage: those that still run after a cut have limits of their own, and the limits of every step after it fit the reserve of the budget
+  const after = steps.slice(match + 1), always = after.filter((x) => /always\(\)/.test(x.if ?? '') || x.if === 'always()');
+  assert.deepEqual(always.map((x) => x.name), ['Keep the simulated twin on Drive', "Report (commit comment; RUNBOOK 'Reading results')"]);
+  for (const x of always) { const m = x['timeout-minutes']; assert.ok(typeof m === 'number' && m >= 1 && m <= 25, `${x.name}: timeout-minutes ${m}`); }
+  const reserve = Number(build.env.TWIN_RESERVE_MIN);
+  assert.ok(always.reduce((a, x) => a + x['timeout-minutes']!, 0) <= reserve, 'what runs after a cut (the Drive put and the report) fits the reserve');
+  assert.ok(after.filter((x) => x['timeout-minutes'] !== undefined).every((x) => x['timeout-minutes']! <= 25), 'no step after the stage may take more than the reserve');
+  assert.ok(after.filter((x) => /cache\/save/.test(x.uses ?? '')).every((x) => typeof x['timeout-minutes'] === 'number'), 'the cache saves have limits too');
+  // --jobs follows the cores, at most 4: run the step with a stub nproc and a stub node
+  const y = wf(), w = stageWs(), args = path.join(w.tmp, 'a.txt');
+  fs.writeFileSync(path.join(w.bin, 'node'), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$STUB_ARGS"\necho "[twin] stub"\n', { mode: 0o755 }); fs.writeFileSync(path.join(w.ws, 'data/twin/x'), 'x');
+  for (const [cores, want] of [['1', '1'], ['2', '2'], ['4', '4'], ['16', '4'], ['64', '4']]) {
+    fs.writeFileSync(path.join(w.bin, 'nproc'), `#!/usr/bin/env bash\necho ${cores}\n`, { mode: 0o755 }); fs.rmSync(args, { force: true });
+    const r = bash(stepScript(y, 'Match, fill in, and describe'), { PATH: `${w.bin}:${process.env.PATH}`, SPLIT: 'dev', FIT: SPLITS.dev.fit.join(','), JUDGE: DEV_JUDGED.join(','), WARM: '', NEED: '', LAG: 'false', DEPTH_PARAMS_RUN: '', RUNNER_TEMP: w.tmp, STUB_ARGS: args, JOB_START: String(Math.floor(Date.now() / 1000)) }, w.ws);
+    assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+    const lines = fs.readFileSync(args, 'utf8').split('\n').filter(Boolean);
+    assert.ok(/--stage match .*--jobs \d+ --out data\/twin$/.test(lines[0]) && lines[0].includes(`--jobs ${want} `), `${cores} cores: ${lines[0]}`); assert.ok(lines.find((l) => /--stage features/.test(l))!.includes(`--jobs ${want} `));
+    assert.ok(lines.filter((l) => /--stage fill/.test(l)).every((l) => !/--jobs/.test(l)));
+  }
+});
+
+test('the step after a cut: with the stage cut at its budget the build ends red with the cut line, the Drive put and the report still run with no files at all, and the comment keeps the timing lines, the budget line and the cut line in its framing part', () => {
+  const y = wf(), w = stageWs(), log = path.join(w.tmp, 'build.log'), NOW = Math.floor(Date.now() / 1000);
+  // a stub node that prints what the match stage prints, then hangs (the cut ends it)
+  fs.writeFileSync(path.join(w.bin, 'node'), '#!/usr/bin/env bash\ncase "$*" in *"--stage match"*) echo "[twin] match 2026-11-13: tickers 1.0 s, restrict 2.0 s, pair 3.0 s"; echo "[twin] 2026-11-13: contracts real 5 / twin 4"; sleep 60;; esac\n', { mode: 0o755 });
+  const env = { PATH: `${w.bin}:${process.env.PATH}`, SPLIT: 'dev', FIT: SPLITS.dev.fit.join(','), JUDGE: DEV_JUDGED.join(','), WARM: '', NEED: '', LAG: 'false', DEPTH_PARAMS_RUN: '', RUNNER_TEMP: w.tmp, JOB_START: String(NOW - (340 * 60 - 25 * 60 - 120 - 3)) };
+  const t0 = Date.now(), r = bash(stepScript(y, 'Match, fill in, and describe'), env, w.ws);
+  assert.ok(Date.now() - t0 < 40_000); assert.notEqual(r.status, 0);
+  const text = fs.readFileSync(log, 'utf8');
+  assert.match(text, /^\[twin\] ERROR: match was cut at the job's time budget after \d+ s \(jobs [1-4]\); the rest of this run was not built$/m);
+  assert.ok(!/--stage fill|--stage features/.test(r.stdout + text), 'nothing after the cut ran');
+  // the Drive put, with no folder of data/ there but the days.txt it writes: runs and succeeds
+  const calls = path.join(w.tmp, 'calls.txt');
+  const keep = bash(exprText(stepScript(y, 'Keep the simulated twin on Drive')), { PATH: `${w.bin}:${process.env.PATH}`, RUNNER_TEMP: w.tmp, GITHUB_WORKSPACE: w.ws, STUB_CALLS: calls, STUB_DRIVE: tmpDir() }, w.ws);
+  assert.equal(keep.status, 0, `${keep.stdout}${keep.stderr}`); assert.match(fs.readFileSync(calls, 'utf8'), /^put simulated\/history-twin\/77 /m);
+  // the report, from the log the cut left
+  const out = path.join(w.tmp, 'comment.txt'), rep = bash(exprText(stepScript(y, 'Report (commit comment')), { PATH: `${w.bin}:${process.env.PATH}`, RUNNER_TEMP: w.tmp, GH_OUT: out, GITHUB_SHA: 'abcdef0123456789' }, w.ws);
+  assert.equal(rep.status, 0, `${rep.stdout}${rep.stderr}`);
+  const comment = fs.readFileSync(out, 'utf8'), framing = comment.slice(0, comment.indexOf('--- the last lines ---'));
+  for (const re of [/^\[twin\] ERROR: match was cut at the job's time budget after \d+ s/m, /^\[twin\] time budget: match may run up to \d+ s/m, /^\[twin\] match 2026-11-13: tickers 1\.0 s, restrict 2\.0 s, pair 3\.0 s$/m]) assert.match(framing, re);
+  assert.ok(!/contracts real 5/.test(framing) && /contracts real 5/.test(comment), 'a per-day mechanics line is a detail line, below the framing');
+  // a run with no log at all still reports
+  fs.rmSync(log); const none = bash(exprText(stepScript(y, 'Report (commit comment')), { PATH: `${w.bin}:${process.env.PATH}`, RUNNER_TEMP: w.tmp, GH_OUT: out, GITHUB_SHA: 'abcdef0123456789' }, w.ws);
+  assert.equal(none.status, 0, none.stderr); assert.match(fs.readFileSync(out, 'utf8'), /\(no \[twin\] lines/);
+});
+
+test('the commit comment\'s framing pattern is pinned literally, timing lines included: it keeps the timing, budget and cut lines and the other framing lines, and not a detail line', () => {
+  const frame = /FRAME='\^\\\[twin\\\] \(([^']+)\)'/.exec(stepScript(wf(), 'Report (commit comment; RUNBOOK'));
+  assert.ok(frame, 'the FRAME pattern is where the test looks');
+  assert.deepEqual(frame![1].split('|'), [
+    'ERROR', 'WARNING', 'split', 'real 15', 'requote source', 'requote days', 'depth model fitted', 'depth model schema', 'depth model: asset', 'depth model calibration', 'depth model reused', 'real side', 'fast', 'decision model', 'CONFIRM', 'no cached', 'matched', 'confirm split', 'calibration',
+    'time budget', 'match took', 'match [0-9]{4}-[0-9]{2}-[0-9]{2}: tickers', 'fill took', 'fill [0-9]{4}-[0-9]{2}-[0-9]{2}: ', 'features took', 'features [a-z]+ [0-9]{4}-[0-9]{2}-[0-9]{2}: ',
+  ]);
+  const re = new RegExp(`^\\[twin\\] (${frame![1]})`);
+  for (const l of ['[twin] match 2026-11-13: tickers 1.0 s, restrict 2.0 s, pair 3.0 s', '[twin] match took 12.3 s (jobs 4)', '[twin] fill 2026-11-13: 4.5 s', '[twin] fill took 20.1 s', '[twin] features depth 2026-11-14: 6.0 s', '[twin] features took 99.9 s (jobs 4)', '[twin] time budget: match may run up to 18000 s (the job\'s 340-minute limit)', '[twin] ERROR: features was cut at the job\'s time budget after 12 s (jobs 4); the rest of this run was not built']) assert.ok(re.test(l), l);
+  for (const l of ['[twin] 2026-11-13: contracts real 5 / twin 4', '[twin] real 2026-11-13: 12 lives, trades/min 1.00', '[twin] features real: 12 contract lives over 2 day(s)', '[twin] match from 12:00 UTC', '[twin] depth fill-in written for 7 day(s)']) assert.ok(!re.test(l), l);
+});
+// ---- S1 end of the match and features tests ----

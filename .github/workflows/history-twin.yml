@@ -365,6 +365,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 340
+    env:
+      # The job's time budget (round S1; twin_budgeted in .github/scripts/twin-lib.sh): the limit above (a test holds the two numbers equal) and the minutes kept
+      # for what must still run after the match, fill and features commands (the cache saves, the Drive put, the report). A heavy command is run under `timeout`
+      # with what is left of the limit at the moment it starts, less this reserve, so a slow run is cut by its own step and still reports (P2 was cancelled by the
+      # job limit and lost its log, its caches and its Drive copy).
+      TWIN_JOB_LIMIT_MIN: '340'
+      TWIN_RESERVE_MIN: '25'
     permissions:
       contents: write
     outputs:
@@ -822,18 +829,24 @@ jobs:
           NEED: ${{ steps.twinsrc.outputs.need }}
           LAG: ${{ inputs.lag_arms }}
           DEPTH_PARAMS_RUN: ${{ inputs.depth_params_run }}
+          # each child process of the match and features stages gets this heap (the job's 12288 per process would not fit four children in the runner's 16 GB)
+          TWIN_CHILD_HEAP_MB: '3072'
         run: |
           set -euo pipefail
+          source .github/scripts/twin-lib.sh
           T=data/twin
           DP=(); [ -z "${DEPTH_PARAMS_RUN:-}" ] || DP=(--depth-params data/sweep/best.json)
+          # The match and features stages run their day passes in child processes: as many as the runner has cores, at most 4 (--jobs; the files and lines are the serial route's).
+          # Every node command below runs under the job's time budget (twin_budgeted): cut at what is left of the limit less the reserve, with a '[twin] ERROR: ... was cut' line.
+          J=$(nproc); [ "$J" -le 4 ] || J=4; [ "$J" -ge 1 ] || J=1
           echo "[twin] match from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
-          node --import tsx research/historyTwin.ts --stage match --real data/twin-real15m --twin data/replay-src --days "$JUDGE" --warm-days "$WARM" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
-          node --import tsx research/historyTwin.ts --stage fill --src $T/requote --dst $T/depth --how depth --depth-model data/models/depth_model.json --split-file $T/split.json "${DP[@]}" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
+          twin_budgeted match "$J" node --import tsx research/historyTwin.ts --stage match --real data/twin-real15m --twin data/replay-src --days "$JUDGE" --warm-days "$WARM" --jobs "$J" --out $T
+          twin_budgeted fill 1 node --import tsx research/historyTwin.ts --stage fill --src $T/requote --dst $T/depth --how depth --depth-model data/models/depth_model.json --split-file $T/split.json "${DP[@]}"
           DIRS="real=$T/real,requote=$T/requote,depth=$T/depth"
           if [ "$LAG" = true ]; then
             mkdir -p $T/lag
             for d in ${NEED//,/ }; do if [ -f data/history-replay-lag/md-$d.jsonl.gz ]; then cp data/history-replay-lag/md-$d.jsonl.gz $T/lag/; fi; done
-            node --import tsx research/historyTwin.ts --stage fill --src $T/lag --dst $T/lagdepth --how depth --depth-model data/models/depth_model.json --split-file $T/split.json "${DP[@]}" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
+            twin_budgeted fill 1 node --import tsx research/historyTwin.ts --stage fill --src $T/lag --dst $T/lagdepth --how depth --depth-model data/models/depth_model.json --split-file $T/split.json "${DP[@]}"
             DIRS="$DIRS,lag=$T/lag,lagdepth=$T/lagdepth"
           fi
           echo "[twin] features from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
@@ -841,7 +854,7 @@ jobs:
           EXTRA=(); [ "$SPLIT" = confirm ] || EXTRA=(--extra-days "$FIT" --extra-dir data/twin-real15m --real15m data/twin-real15m)
           # the real FIT rows the calibration stage already parsed (used only when they were made for exactly these days)
           [ "$SPLIT" = confirm ] || [ ! -d data/calib ] || EXTRA+=(--handoff data/calib)
-          node --import tsx research/historyTwin.ts --stage features --dirs "$DIRS" --days "$JUDGE" "${EXTRA[@]}" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
+          twin_budgeted features "$J" node --import tsx research/historyTwin.ts --stage features --dirs "$DIRS" --days "$JUDGE" --jobs "$J" "${EXTRA[@]}" --out $T
           # sizes of the restricted real days are a function of the real book volume: not printed on a confirm split
           [ "$SPLIT" = confirm ] || du -sh $T/* | cat
       # The fast dev run: the requote, depth and real rows in ONE stage, no filled day written or read back (research/historyTwin.ts fastrows;
@@ -874,14 +887,18 @@ jobs:
           for f in real-meta.json real-activity.json real-fit-features.json; do [ ! -f "data/twin/$f" ] || cp "data/twin/$f" data/twinlite/; done
           du -sh data/twinlite | cat
       - uses: actions/cache/save@v4
+        timeout-minutes: 5
         with:
           path: data/twinlite
           key: history-twin-lite-${{ github.run_id }}
       # Steven (Nov 2): all history on Drive, raw and simulated. The simulated side of this run (the twin's books and fills,
       # the depth/lag fill-ins, regenerated history, the model and the judged features) goes to simulated/history-twin/<run id>;
       # the real days are on Drive already (recordings/, derived/twin-real15m/).
+      # It runs after a cut or a failed stage too (always()), from whatever data/ holds (each folder is linked only when it is there), and has its own limit, so that this
+      # step and the report below together fit the reserve the match, fill and features commands leave (TWIN_RESERVE_MIN above: a test adds the two limits up).
       - name: Keep the simulated twin on Drive
         if: ${{ always() && steps.drive.outcome == 'success' }}
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           S="$RUNNER_TEMP/sim"; rm -rf "$S"; mkdir -p "$S"
@@ -895,6 +912,7 @@ jobs:
       # Only the backtest legs read the whole twin folder (a plain verdict reads the small judged files above).
       - uses: actions/cache/save@v4
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.backtests }}
+        timeout-minutes: 10
         with:
           path: |
             data/twin
@@ -906,12 +924,14 @@ jobs:
       # stages' own catch), so it is here even when the job log cannot be read.
       - name: Report (commit comment; RUNBOOK 'Reading results')
         if: always()
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           L="$RUNNER_TEMP/build.log"; ALL="$RUNNER_TEMP/twin-lines.txt"
           grep -E '^\[(twin|kalshi-replay-data)\]' "$L" 2>/dev/null | cut -c1-300 > "$ALL" || true
-          FRAME='^\[twin\] (ERROR|WARNING|split|real 15|requote source|requote days|depth model fitted|depth model schema|depth model: asset|depth model calibration|depth model reused|real side|fast|decision model|CONFIRM|no cached|matched|confirm split|calibration)'
+          # the timing lines (round S1: a step's seconds per day, 'took', and the time budget it was given) are framing lines too: a run cut at the job's budget shows how far it got
+          FRAME='^\[twin\] (ERROR|WARNING|split|real 15|requote source|requote days|depth model fitted|depth model schema|depth model: asset|depth model calibration|depth model reused|real side|fast|decision model|CONFIRM|no cached|matched|confirm split|calibration|time budget|match took|match [0-9]{4}-[0-9]{2}-[0-9]{2}: tickers|fill took|fill [0-9]{4}-[0-9]{2}-[0-9]{2}: |features took|features [a-z]+ [0-9]{4}-[0-9]{2}-[0-9]{2}: )'
           {
             echo "History twin build, run ${{ github.run_id }} (${{ job.status }}), on commit ${GITHUB_SHA:0:8}"; echo; echo '```'
             [ -s "$ALL" ] || echo "(no [twin] lines: the build failed before its first logging step (checkout or dependency install); the reason is an annotation of the run: gh run view ${{ github.run_id }})"

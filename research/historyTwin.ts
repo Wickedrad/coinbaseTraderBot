@@ -56,9 +56,10 @@
 //   ... --stage split --split dev|confirm|custom [--fit-days A,B --judge-days C,D --warm-days E] --out data/twin
 //   ... --stage real15m-check --dir data/twin-real15m --days A,B,...
 //   ... --stage twin-source --dir data/replay-drive --days C,D --out data/twin
-//   ... --stage match --real data/twin-real15m --twin data/replay-src --days C,D [--warm-days E] --out data/twin
+//   ... --stage match --real data/twin-real15m --twin data/replay-src --days C,D [--warm-days E] [--jobs N] --out data/twin   (--jobs: N days at once in child processes, the same files and lines)
 //   ... --stage fill --src data/twin/requote --dst data/twin/depth --how depth --depth-model data/models/depth_model.json --split-file data/twin/split.json
-//   ... --stage features --dirs real=data/twin/real,requote=data/twin/requote,depth=data/twin/depth --days C,D --out data/twin
+//   ... --stage features --dirs real=data/twin/real,requote=data/twin/requote,depth=data/twin/depth --days C,D [--jobs N] --out data/twin   (--jobs: N (source, day) passes at once)
+//   ... --stage unit --unit-file DIR/uN.in.json   (internal: one unit of match or features for a --jobs child process, answered in uN.out.json; never run by hand)
 //   ... --stage backtest --dir data/twin/real --name real [--latency-ms 250] --days ... --out data/twin
 //   ... --stage verdict --out data/twin [--confirm-look 2 --confirm-look-note "text"]   (reads features-*.json, windows-*.json, split.json; the note is required on the confirm days)
 //   ... --stage sweep --fit-days A,B,C --twin-requote data/replay-src --real data/twin-real15m --depth-model data/models/depth_model.json --gen 0 --shard 0/7 --candidates 10 [--parents elite.json] --out data/sweep
@@ -92,6 +93,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { performance } from 'perf_hooks';
 import zlib from 'zlib';
 import { OrderBook } from '../bot/marketdata/orderBook';
 import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles';
@@ -99,6 +101,7 @@ import { gbdtLogit } from '../bot/model/trees';
 import { trainGbdt } from './gbdt';
 import { assetOfTicker, DEPTH_ASSETS, readDepthModel, resolveDepthSimParams, validateDepthModel, type CalibrationCode, type DepthCalibration, type DepthModel, type DepthSimParams } from './history/depthSim';
 import { REPLAY_VERSION } from './history/historyReplay';
+import { runUnits, serveUnit } from './history/unitPool';
 import { DEPTH_MODEL_SCHEMA } from './history/depthModelVersion';
 import { calibrateDepthModel, CAL_HELD_IN_BUDGET_S, gapsOfAsset, heldInCheck, type CalRow } from './history/depthCalibrate';
 import {
@@ -568,37 +571,100 @@ async function pairDay(day: string, realFile: string, twinFile: string, realT: M
 /** The per-day line the match stage prints (dev and custom only), also printed from a cached paired.json by the fast route. */
 export const matchLine = (day: string, p: Paired): string => `[twin] ${day}: contracts real ${p.realContracts} / twin ${p.twinContracts} / both ${p.both} (real 15m missing from the twin ${p.onlyReal15m}, twin-only ${p.onlyTwin}); minute quote vs real mid: ${p.quoteN} pts, off ${p.quoteMaeC.toFixed(2)}c (bias ${p.quoteBiasC.toFixed(2)}c), spread real ${p.spreadRealC.toFixed(2)}c twin ${p.spreadTwinC.toFixed(2)}c; index ${p.indexN} pts off ${p.indexMaeBps.toFixed(1)} bps (bias ${p.indexBiasBps.toFixed(1)}); results agree ${p.resultsAgree}/${p.results}`;
 
+// Round S1 (RUNBOOK 3.2 and 5): the match, fill and features steps took 290+ minutes serially on a 4-vCPU runner (P2 was cancelled at the job's 340-minute limit). The
+// day passes of match and features are independent, so `--jobs N` runs them in N child processes (research/history/unitPool.ts); every global thing (the checks, the order of the
+// files and lines, paired.json, the follow diagnostics) stays in the parent, and the files and every printed line except the timing lines are those of the serial route (a test
+// holds them byte for byte). `--jobs 1` (the default) is the serial route: the same function, called in this process, one day after the other.
+
+/** `--jobs N`: how many child processes the match and features stages may use (default 1: no child, today's route). */
+export function jobsArg(): number {
+  const raw = arg('jobs', '1');
+  if (!/^\d+$/.test(raw) || +raw < 1 || +raw > 64) throw new Error(`--jobs must be a whole number from 1 to 64 (got "${raw.slice(0, 20)}")`);
+  return +raw;
+}
+/** Seconds as the timing lines print them (one decimal). */
+const fmtSecs = (ms: number): string => (ms / 1000).toFixed(1);
+/** This file: the script a child process runs (`--stage unit`). */
+const SELF = fileURLToPath(import.meta.url);
+const prevDayOf = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+
+export interface MatchMs { tickers: number; restrict: number; pair: number }
+/** What one day of the match stage gives back: the day's Paired and the milliseconds of its three parts, or `left` (which of the two files the day lacks). */
+export interface MatchUnitResult { day: string; left?: { real: boolean; twin: boolean }; paired?: Paired; ms?: MatchMs }
+export const matchTimingLine = (day: string, ms: MatchMs): string => `[twin] match ${day}: tickers ${fmtSecs(ms.tickers)} s, restrict ${fmtSecs(ms.restrict)} s, pair ${fmtSecs(ms.pair)} s`;
+
+/** One day of the match stage, exactly as the loop did it: the day's real and twin files, the tickers of the real day, of the twin day and of the day before it, the real
+ *  day restricted to those into out/real, the twin day copied to out/requote, the paired mechanics on the restricted day. In this process (jobs 1) or in a child. Nothing
+ *  here reads any day but this one and the day before it in the twin folder (as before). The clock is read only for the timing line. */
+export async function matchUnit(o: { realDir: string; twinDir: string; out: string; day: string }): Promise<MatchUnitResult> {
+  const { realDir, twinDir, out, day } = o;
+  const rf = dayFile(realDir, day), tf = dayFile(twinDir, day);
+  if (!rf || !tf) return { day, left: { real: !!rf, twin: !!tf } };
+  const ms: MatchMs = { tickers: 0, restrict: 0, pair: 0 };
+  let t = performance.now();
+  const realT = await tickersOf(rf), twinT = await tickersOf(tf);
+  // Contracts open at midnight are listed the day before: keep every twin ticker of this day and the day before.
+  const keep = new Set(twinT.keys());
+  const prev = dayFile(twinDir, prevDayOf(day));
+  if (prev) for (const tk of (await tickersOf(prev)).keys()) keep.add(tk);
+  ms.tickers = performance.now() - t; t = performance.now();
+  await restrictDay(rf, path.join(out, 'real', `md-${day}.jsonl.gz`), keep);
+  fs.copyFileSync(tf, path.join(out, 'requote', path.basename(tf)));
+  ms.restrict = performance.now() - t; t = performance.now();
+  // Paired on the restricted day (the twin's contracts only): the same records for those contracts, far fewer lines.
+  const paired = await pairDay(day, path.join(out, 'real', `md-${day}.jsonl.gz`), tf, realT, twinT);
+  ms.pair = performance.now() - t;
+  return { day, paired, ms };
+}
+
 async function stageMatch(): Promise<void> {
   const realDir = arg('real', 'data/recordings'), twinDir = arg('twin', 'data/history-replay'), out = arg('out', 'data/twin');
   const days = arg('days').split(',').filter(Boolean);
   // Warm-up days (the day before a judged day, for the backtests' sake) are matched too but never judged.
   const warm = arg('warm-days').split(',').filter((d) => d && !days.includes(d));
+  const jobs = jobsArg();
   const split = readSplit(splitFile(out));
   if (split) { assertDisjoint(split.fit, days); assertHeldOut(split, [...days, ...warm]); }
   // Blind whenever a confirm day is read, whatever the split is called (and with no split on record at all).
   const quiet = isBlind(split, [...days, ...warm]);
   fs.mkdirSync(path.join(out, 'real'), { recursive: true });
   fs.mkdirSync(path.join(out, 'requote'), { recursive: true });
+  const t0 = performance.now();
+  const order = [...warm, ...days];
   const paired: Paired[] = [];
   const left: string[] = [];
-  for (const day of [...warm, ...days]) {
-    const rf = dayFile(realDir, day), tf = dayFile(twinDir, day);
-    if (!rf || !tf) { console.log(`[twin] ${day}: ${rf ? '' : 'no real recording '}${tf ? '' : 'no history twin'}; left out`); left.push(day); continue; }
-    const realT = await tickersOf(rf), twinT = await tickersOf(tf);
-    // Contracts open at midnight are listed the day before: keep every twin ticker of this day and the day before.
-    const keep = new Set(twinT.keys());
-    const prev = dayFile(twinDir, new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10));
-    if (prev) for (const t of (await tickersOf(prev)).keys()) keep.add(t);
-    await restrictDay(rf, path.join(out, 'real', `md-${day}.jsonl.gz`), keep);
-    fs.copyFileSync(tf, path.join(out, 'requote', path.basename(tf)));
-    // Paired on the restricted day (the twin's contracts only): the same records for those contracts, far fewer lines.
-    const p = await pairDay(day, path.join(out, 'real', `md-${day}.jsonl.gz`), tf, realT, twinT);
-    paired.push(p);
-    if (!quiet) console.log(matchLine(day, p));
+  // A day's own lines, in the order of `order` whichever route produced the day (the timing line is printed when the day is done).
+  const emit = (day: string, r: MatchUnitResult) => {
+    if (r.left) { console.log(`[twin] ${day}: ${r.left.real ? '' : 'no real recording '}${r.left.twin ? '' : 'no history twin'}; left out`); left.push(day); return; }
+    paired.push(r.paired!);
+    if (!quiet) console.log(matchLine(day, r.paired!));
+  };
+  const unitOf = (day: string) => ({ realDir, twinDir, out, day });
+  // the days with both files are the units a child may take; a day without them is left out here (a lookup, no child)
+  const work = [...new Set(order)].filter((d) => dayFile(realDir, d) && dayFile(twinDir, d));
+  const used = Math.min(jobs, work.length);
+  if (used > 1) {
+    const done = new Map<string, MatchUnitResult>();
+    for (const d of new Set(order)) if (!work.includes(d)) done.set(d, await matchUnit(unitOf(d)));
+    let cursor = 0;
+    const flush = () => { for (; cursor < order.length && done.has(order[cursor]); cursor++) emit(order[cursor], done.get(order[cursor])!); };
+    flush();
+    await runUnits<MatchUnitResult>(work.map((d) => ({ id: d, spec: { kind: 'match', ...unitOf(d) } })), {
+      script: SELF, dir: out, label: 'match', jobs: used,
+      onResult: (_i, r) => { done.set(r.day, r); console.log(matchTimingLine(r.day, r.ms!)); flush(); },
+    });
+    flush();
+  } else {
+    for (const day of order) {
+      const r = await matchUnit(unitOf(day));
+      if (r.ms) console.log(matchTimingLine(day, r.ms));
+      emit(day, r);
+    }
   }
   // A confirm split reads no mechanics per day (nothing there to tune on): counts only.
   if (quiet) { const j = paired.filter((p) => days.includes(p.day)); console.log(`[twin] matched ${j.length} of ${days.length} judged day(s): ${j.reduce((a, p) => a + p.both, 0)} contracts in both, ${j.reduce((a, p) => a + p.onlyReal15m, 0)} real 15m missing from the twin, ${j.reduce((a, p) => a + p.onlyTwin, 0)} twin-only; results agree ${j.reduce((a, p) => a + p.resultsAgree, 0)}/${j.reduce((a, p) => a + p.results, 0)}`); }
   fs.writeFileSync(path.join(out, 'paired.json'), JSON.stringify(paired, null, 1));
+  console.log(`[twin] match took ${fmtSecs(performance.now() - t0)} s (jobs ${Math.max(1, used)})`);
   // With a split on record every judged day must be there: a verdict on fewer days than asked is not the verdict asked for.
   const lost = left.filter((d) => days.includes(d));
   if (split && lost.length) throw new Error(`judged day(s) without a real recording or a twin: ${lost.join(', ')}`);
@@ -849,9 +915,29 @@ export async function realFitRows(o: { fit: readonly string[]; realDir: string; 
   return { rows: [...perDay.values()].flat(), perDay, follow, reused: false };
 }
 
+export const featuresTimingLine = (src: string, day: string, ms: number): string => `[twin] features ${src} ${day}: ${fmtSecs(ms)} s`;
+/** What one (source, day) pass of the features stage gives back from a child: the day's rows, the follow diagnostics (the module global followDiag) that pass fed, its milliseconds. */
+export interface FeaturesUnitResult { rows: Row[]; follow: Record<string, { m: number[]; x: number[] }>; ms: number }
+/** One (source, day) pass in a child process: the rows `dayRows` builds from the day's file, and what it added to `followDiag[src]` (the child's global starts empty, so that is all of it). */
+export async function featuresUnit(o: { src: string; file: string; day: string; results: Array<[string, string]> }): Promise<FeaturesUnitResult> {
+  const t = performance.now();
+  const rows = await dayRows(o.file, o.day, o.src, new Map(o.results));
+  return { rows, follow: followDiag[o.src] ?? {}, ms: performance.now() - t };
+}
+
+/** The hidden stage the pool's children run (research/history/unitPool.ts): one unit of the match or features stage, answered through a file. */
+async function stageUnit(): Promise<void> {
+  await serveUnit(async (spec) => {
+    if (spec?.kind === 'match') return matchUnit(spec);
+    if (spec?.kind === 'features') return featuresUnit(spec);
+    throw new Error(`unknown unit kind "${String(spec?.kind).slice(0, 40)}"`);
+  });
+}
+
 async function stageFeatures(): Promise<void> {
   const out = arg('out', 'data/twin');
   const days = arg('days').split(',').filter(Boolean);
+  const jobs = jobsArg();
   const split = readSplit(splitFile(out));
   if (split) { assertDisjoint(split.fit, days); assertHeldOut(split, days); }
   // A confirm split (or any run that reads a confirm day) prints no per-day activity or follow tables (the optimizer must
@@ -860,9 +946,31 @@ async function stageFeatures(): Promise<void> {
   const dirs = Object.fromEntries(arg('dirs').split(',').filter(Boolean).map((kv) => kv.split('=') as [string, string]));
   // Labels from Kalshi's own results (the twin carries them for every contract), the same for both sides.
   const results = await resultsOf(dirs.requote ?? Object.values(dirs)[0], days);
+  const t0 = performance.now();
+  // The (source, day) passes are independent: with --jobs N they run N at a time in child processes, and their rows and follow diagnostics are merged below in the order the serial loop
+  // would have made them (source, then day), so the files and the printed lines are the serial route's.
+  const units: Array<{ src: string; day: string; file: string }> = [];
+  for (const [src, dir] of Object.entries(dirs)) for (const d of days) { const file = dayFile(dir, d); if (file) units.push({ src, day: d, file }); }
+  const used = Math.min(jobs, units.length);
+  const pre = new Map<string, FeaturesUnitResult>();
+  if (used > 1) {
+    const res = [...results];
+    await runUnits<FeaturesUnitResult>(units.map((u) => ({ id: `${u.src} ${u.day}`, spec: { kind: 'features', ...u, results: res } })), {
+      script: SELF, dir: out, label: 'features', jobs: used,
+      onResult: (i, r) => { pre.set(`${units[i].src}|${units[i].day}`, r); console.log(featuresTimingLine(units[i].src, units[i].day, r.ms)); },
+    });
+  }
   for (const [src, dir] of Object.entries(dirs)) {
     const rows: Row[] = [];
-    for (const d of days) { const f = dayFile(dir, d); if (f) rows.push(...(await dayRows(f, d, src, results))); }
+    for (const d of days) {
+      const f = dayFile(dir, d);
+      if (!f) continue;
+      const r = pre.get(`${src}|${d}`);
+      if (r) { rows.push(...reviveRows(r.rows)); if (Object.keys(r.follow).length) mergeFollow(src, r.follow); continue; }
+      const t = performance.now();
+      rows.push(...(await dayRows(f, d, src, results)));
+      console.log(featuresTimingLine(src, d, performance.now() - t));
+    }
     fs.writeFileSync(path.join(out, `features-${src}.json`), JSON.stringify(rows));
     console.log(`[twin] features ${src}: ${rows.length} contract lives over ${days.length} day(s)`);
     if (quiet) continue;
@@ -883,6 +991,7 @@ async function stageFeatures(): Promise<void> {
     // The real side is kept beside its rows for the fast route (--real15m: the folder of the prepped real days, whose meta files hold their sha256).
     if (src === 'real' && arg('real15m') && dirs.requote) writeRealSidecars(out, await realMetaFor({ judged: days, fit: extraUsed, real15mDir: arg('real15m'), twinDir: dirs.requote }), act, fitText);
   }
+  console.log(`[twin] features took ${fmtSecs(performance.now() - t0)} s (jobs ${Math.max(1, used)})`);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1083,8 +1192,14 @@ async function stageFill(): Promise<void> {
   const src = arg('src'), dst = arg('dst'), how = arg('how', 'depth') as 'depth' | 'worst' | 'hold' | 'requote';
   const { depth, loaded } = await depthFillSetup({ how, model: arg('depth-model'), splitFile: arg('split-file'), params: arg('depth-params') }, (l) => console.log(l));
   fs.mkdirSync(dst, { recursive: true });
-  for (const f of fs.readdirSync(src).filter((x) => x.startsWith('md-'))) await fillDayFile(path.join(src, f), path.join(dst, f), { how }, depth, loaded?.params);
+  const t0 = performance.now();
+  for (const f of fs.readdirSync(src).filter((x) => x.startsWith('md-'))) {
+    const t = performance.now();
+    await fillDayFile(path.join(src, f), path.join(dst, f), { how }, depth, loaded?.params);
+    console.log(`[twin] fill ${f.replace(/^md-/, '').replace(/\.(jsonl\.gz|jsonl|mdc)$/, '')}: ${fmtSecs(performance.now() - t)} s`);
+  }
   console.log(`[twin] ${how} fill-in written for ${fs.readdirSync(dst).length} day(s)`);
+  console.log(`[twin] fill took ${fmtSecs(performance.now() - t0)} s`);
   if (depthSims.length) console.log(simulatorLine(arg('dst'), depthSims.map((x) => x.stats), depthSims.map(picksOf)));
 }
 
@@ -1825,6 +1940,7 @@ export async function historyTwinMain(): Promise<void> {
   if (stage === 'twin-source') return stageTwinSource();
   if (stage === 'match') return stageMatch();
   if (stage === 'features') return stageFeatures();
+  if (stage === 'unit') return stageUnit();
   if (stage === 'backtest') return stageBacktest();
   if (stage === 'fill') return stageFill();
   if (stage === 'fastrows') return stageFastRows();
