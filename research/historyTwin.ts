@@ -1138,15 +1138,132 @@ export function outcome(real: Win, other: Win, seed = 1): { pnl: number; realPnl
   return { pnl: b.reduce((x, y) => x + y, 0), realPnl: a.reduce((x, y) => x + y, 0), traded: keys.filter((k) => (other.get(k)?.contracts ?? 0) > 0).length, realTraded: keys.filter((k) => (real.get(k)?.contracts ?? 0) > 0).length, meanDiff: mean, lo: boots[Math.floor(0.025 * boots.length)] ?? 0, hi: boots[Math.floor(0.975 * boots.length)] ?? 0, rmse: Math.sqrt(n ? d.reduce((x, y) => x + y * y, 0) / n : 0), corr: corr(a, b) };
 }
 
-/** The decision model's backtest on one folder (replayFidelity's, the production settings), windows of `days` only. */
+// ---------------------------------------------------------------------------------------------------------------
+// R3a: the per-position dump of a backtest leg (REPORT ONLY: nothing here reaches the judge, the pass bar or the windows files).
+//
+// Why: the depth twin opens about 2.1x the positions real does (166 against 78 over P2b's legs) on about 30% fewer entry evaluations,
+// and nothing says WHICH asset, hour or kind of strike the extra entries come from. `stageBacktest --positions` writes, beside the
+// leg's windows file, `positions-HOW-pN-DAY.json`: one row per settled position of the judged day (asset, close time, hourly strike or
+// not, the contracts of its window, P&L in cents) and the run's totals, and prints counts only. Dev and custom legs only: a leg that
+// reads a confirm day is asked for nothing and refuses the flag. The data are what the engine already booked (`result.trades`,
+// `result.windows`, `result.entryEvaluations`): no simulator, judge or engine byte is read or changed, and nothing looks ahead.
+
+/** The file's format version (bump when a field changes). */
+export const POSITIONS_VERSION = 1;
+/** A settled position with a P&L below this many cents counts as a loser in the report (-$5). */
+export const POSITION_LOSER_CENTS = -500;
+/** The engine's settled-position record, as far as the dump reads it (research/backtest.ts TradeResult). NOTE: `contracts` there is the
+ *  contract count of the position's whole CLOSE-TIME WINDOW (every ticker closing then, entries and exits), not of the position itself. */
+export interface TradeLike { ticker: string; closeTs: number; pnl: number; contracts: number }
+export interface PositionRow {
+  /** BTC, ETH, SOL, XRP, or other (from the ticker's series prefix: bot/marketdata/seriesDiscovery.ts assetFromSeries). */
+  asset: string;
+  /** The market's close time (ms), the window's key. */
+  closeTs: number;
+  /** A strike of a non-15-minute series (an hourly or daily ladder or bracket), as against a 15-minute Up/Down contract. */
+  hourly: boolean;
+  /** The engine's `contracts` for the position: the filled contracts of its whole window (all tickers closing then; entry and exit fills), so it is
+   *  the SAME number on every position of a window and summing it over positions counts a window once per position. */
+  windowContracts: number;
+  /** Realized P&L in whole cents (fees in). */
+  pnl: number;
+}
+export interface PositionsFile {
+  version: number;
+  /** The judged day(s) this file holds (the dump's own day filter, the windows file's: the day a window closed in, UTC). */
+  days: string[];
+  positions: PositionRow[];
+  /** The whole leg run, warm-up day included, as the `[fidelity]` line of the same run prints it. The entry evaluations cannot be split by day. */
+  totals: { entryEvaluations: number; fills: number; contracts: number };
+  /** The judged day(s) only, from the windows: windows with fills, their fills and contracts. */
+  day: { windows: number; fills: number; contracts: number };
+}
+
+/** A window's day (UTC; a contract closing at midnight belongs to the day before): replayFidelity's `onDays` filter, a test holds them equal. */
+const positionDay = (closeTs: number): string => new Date(closeTs - 1).toISOString().slice(0, 10);
+export const positionAsset = (ticker: string): string => assetOfTicker(ticker) ?? 'other';
+export const positionHourly = (ticker: string): boolean => !/15M$/.test(ticker.split('-')[0]);
+
+/** What the dump keeps of a finished backtest run, for the judged `days` only (the windows file's own day filter). */
+export function buildPositions(r: { trades: readonly TradeLike[]; windows: ReadonlyMap<number, { contracts: number; fills?: number }>; entryEvaluations: number; fills: number; contracts: number }, days: readonly string[]): PositionsFile {
+  const mine = (k: number) => Number.isFinite(k) && days.includes(positionDay(k));
+  const positions = r.trades.filter((t) => mine(t.closeTs)).map((t): PositionRow => ({ asset: positionAsset(t.ticker), closeTs: t.closeTs, hourly: positionHourly(t.ticker), windowContracts: Math.round(t.contracts), pnl: Math.round(t.pnl * 100) }))
+    .sort((a, b) => a.closeTs - b.closeTs || (a.asset < b.asset ? -1 : a.asset > b.asset ? 1 : 0));
+  let windows = 0, fills = 0, contracts = 0;
+  for (const [k, w] of r.windows) if (mine(k) && w.contracts > 0) { windows++; fills += w.fills ?? 0; contracts += Math.round(w.contracts); }
+  return { version: POSITIONS_VERSION, days: [...days], positions, totals: { entryEvaluations: r.entryEvaluations, fills: r.fills, contracts: Math.round(r.contracts) }, day: { windows, fills, contracts } };
+}
+
+const POSITION_ASSETS = [...DEPTH_ASSETS, 'other'];
+/** `HOW pN` of a leg's `--name` (`depth-p2-2026-11-13`): the date is never printed. */
+const legLabel = (name: string): string => { const m = /^([a-z]+)-p(\d+)(?:-|$)/.exec(name); return m ? `${m[1]} p${m[2]}` : 'leg'; };
+const thousands = (n: number): string => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+/** The `[twin] positions HOW pN ...` lines: counts only (no date, no time, no ticker, no per-window or per-position number). */
+export function positionsLines(name: string, f: PositionsFile): string[] {
+  const label = legLabel(name), ps = f.positions, ev = f.totals.entryEvaluations;
+  const losers = (xs: readonly PositionRow[]) => xs.filter((p) => p.pnl < POSITION_LOSER_CENTS).length;
+  const windowsOf = (xs: readonly PositionRow[]) => new Set(xs.map((p) => p.closeTs)).size;
+  const out = [
+    `[twin] positions ${label}: ${ps.length} settled positions in ${windowsOf(ps)} windows, ${losers(ps)} losers (below -$5)`,
+    `[twin] positions ${label} totals: the leg's run (warm-up day included) ${thousands(ev)} entry evaluations, ${thousands(f.totals.fills)} fills, ${thousands(f.totals.contracts)} contracts; the judged day ${f.day.windows} traded windows, ${thousands(f.day.fills)} fills, ${thousands(f.day.contracts)} contracts`,
+  ];
+  for (const a of POSITION_ASSETS) {
+    const xs = ps.filter((p) => p.asset === a);
+    if (a === 'other' && !xs.length) continue;
+    const wc = new Map(xs.map((p) => [p.closeTs, p.windowContracts]));
+    out.push(`[twin] positions ${label} ${a}: ${xs.length} positions, ${windowsOf(xs)} windows, ${losers(xs)} losers, ${thousands([...wc.values()].reduce((x, y) => x + y, 0))} window contracts (shared with the other assets), ${ev > 0 ? (xs.length * 1000 / ev).toFixed(2) : 'n/a'} positions per 1,000 entry evaluations`);
+  }
+  const hourly = ps.filter((p) => p.hourly);
+  out.push(`[twin] positions ${label} by strike: ${hourly.length} hourly-strike (${losers(hourly)} losers), ${ps.length - hourly.length} 15-minute (${losers(ps) - losers(hourly)} losers)`);
+  const bucket = (p: PositionRow) => Math.floor(new Date(p.closeTs - 1).getUTCHours() / 6);
+  out.push(`[twin] positions ${label} by UTC close hour: ${['00-05', '06-11', '12-17', '18-23'].map((b, i) => `${b} ${ps.filter((p) => bucket(p) === i).length}`).join(', ')}`);
+  return out;
+}
+
+type ReplayFidelity = typeof import('./replayFidelity');
+/** One backtest leg's run: its windows, and the whole result for the dump (absent when the ref's replayFidelity.ts has no `backtestDirRun`). */
+export interface LegRun { windows: Awaited<ReturnType<ReplayFidelity['backtestDir']>>; result?: Awaited<ReturnType<ReplayFidelity['backtestDirRun']>>['result'] }
+/** Runs one leg through replayFidelity's `backtestDirRun` (R3a: the windows and the whole result). On a ref whose research/replayFidelity.ts
+ *  predates it (the two files pushed apart: this one new, that one old) it runs `backtestDir`, which has always been there: the same windows
+ *  and the same `[fidelity]` lines, and no result to dump. Without this fallback such a pair would fail EVERY leg (`backtestDirRun is not a
+ *  function`) although R3a is report only, and a run with a lost leg is not a verdict. */
+export async function runBacktestLeg(mod: Pick<ReplayFidelity, 'backtestDir'> & Partial<Pick<ReplayFidelity, 'backtestDirRun'>>, dir: string, model: string, extra: Record<string, string>): Promise<LegRun> {
+  if (typeof mod.backtestDirRun === 'function') return mod.backtestDirRun(dir, model, extra);
+  return { windows: await mod.backtestDir(dir, model, extra) };
+}
+
+/** The dump of one finished leg (REPORT ONLY): writes positions-NAME.json into `out` and returns the lines to print. A write that fails, or a run
+ *  with no result (the fallback above), is the ONE warning line and never an error: the windows file is written first and is whole, and a lost leg
+ *  loses checks 2-4 for the whole run. */
+export function dumpPositions(out: string, name: string, days: readonly string[], result: LegRun['result']): string[] {
+  try {
+    if (!result) throw Object.assign(new Error('no result'), { code: 'no-backtestDirRun' });
+    const f = buildPositions(result, days);
+    fs.writeFileSync(path.join(out, `positions-${name}.json`), JSON.stringify(f));
+    return positionsLines(name, f);
+  } catch (e) {
+    return [`[twin] positions ${legLabel(name)}: WARNING: the per-position file was not written (${String((e as NodeJS.ErrnoException)?.code ?? 'error')}); the windows file is whole`];
+  }
+}
+
+/** The decision model's backtest on one folder (replayFidelity's, the production settings), windows of `days` only. With `--positions`
+ *  (dev and custom legs; REPORT ONLY) it also writes positions-NAME.json beside the windows file and prints the counts-only lines above:
+ *  the windows file and the `[fidelity]` lines are the same bytes with or without the flag, and a leg that reads a confirm day refuses it. */
 async function stageBacktest(): Promise<void> {
-  const { backtestDir, onDays } = await import('./replayFidelity');
   const dir = arg('dir'), model = arg('model', 'data/models/model.json'), out = arg('out', 'data/twin'), name = arg('name');
   const days = arg('days').split(',').filter(Boolean);
+  const wantPositions = process.argv.includes('--positions');
+  // Blindness follows the days: a leg on a confirm day writes and prints nothing new, and is refused BEFORE the backtest starts.
+  if (wantPositions && isBlind(undefined, days)) throw new Error('--positions is for dev and custom legs only: a leg that reads a confirm day writes and prints no per-position file (the confirm verdict is blind)');
+  const mod = await import('./replayFidelity');
   const extra: Record<string, string> = arg('latency-ms') ? { 'latency-ms': arg('latency-ms') } : {};
-  const w = onDays(await backtestDir(dir, model, extra), days);
+  const run = await runBacktestLeg(mod, dir, model, extra);
+  const w = mod.onDays(run.windows, days);
   fs.mkdirSync(out, { recursive: true });
   fs.writeFileSync(path.join(out, `windows-${name}.json`), JSON.stringify([...w.entries()]));
+  if (!wantPositions) return;
+  for (const l of dumpPositions(out, name, days, run.result)) console.log(l);
 }
 
 type LoadedDepthParams = ReturnType<typeof loadDepthParamsFile>;

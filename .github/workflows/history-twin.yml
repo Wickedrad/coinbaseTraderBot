@@ -71,6 +71,13 @@
 #      and the legs' per-window P&L from Drive (.github/scripts/twin-windows.py assembles it, for both jobs). A re-verdict of a run with backtests
 #      re-reads checks 2-4 from Drive when the legs' windows are whole there (reverdict_run=RUN); an incomplete set is not used (check 1 only).
 #      A confirm look is numbered by the build job (the verdict job only prints it) or, for a re-verdict, by its Verdict step AFTER every step that reads data.
+#  12. THE PER-POSITION DUMP (round R3a; RUNBOOK 3.5, 3.6, 4; REPORT ONLY). Each dev or custom backtest leg also writes positions-HOW-pN-DAY.json beside its
+#      windows file (research/historyTwin.ts --stage backtest --positions: one row per settled position of the judged day, by asset, hourly strike or not, close
+#      time, window contracts and P&L in cents, plus the run's entry evaluations, fills and contracts) and prints counts-only '[twin] positions HOW pN' lines, so
+#      the next round can see which asset, hour or kind of strike the twin's extra entries come from. A confirm leg is never asked for it (the stage refuses the
+#      flag on a confirm day) and writes and prints nothing new. The windows files, the [fidelity] lines and every verdict number are unchanged. The verdict and
+#      re-verdict jobs then print .github/scripts/twin-positions.py's comparison (requote, depth and placebo against real) in a step of their own, after the
+#      verdict, with continue-on-error: it never decides a pass and never fails a job.
 # The older routes (a Replay fidelity run's cached copy, a server copy slot) are gone from this file; commit 3be29e0 has them.
 #
 # No server access at all. This repository is public: jobs print counts, cents, $ and AUCs only; recordings never go to
@@ -1018,6 +1025,9 @@ jobs:
           MINE=("${D[@]:$S:$PER}")
           SRC=data/twin/$HOW; [ "$HOW" = placebo ] && SRC=data/twin/real
           LAT=(); [ "$HOW" = placebo ] && LAT=(--latency-ms 250)
+          # R3a (RUNBOOK 3.6, 4): dev and custom legs also write positions-HOW-pN-DAY.json beside the windows file and print counts-only
+          # "[twin] positions" lines (where the twin's extra entries come from; report only). A confirm leg is never asked: the stage refuses the flag on a confirm day.
+          POS=(); [ "$BLIND" = true ] || POS=(--positions)
           export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper AUTO_TRAIN=off
           DONE=0
           for d in "${MINE[@]}"; do
@@ -1028,13 +1038,13 @@ jobs:
               elif [ "$x" = "$d" ]; then echo "::error::no $d in $SRC"; exit 1; fi
             done
             rc=0
-            node --import tsx research/historyTwin.ts --stage backtest --dir "$DIR" --name "$HOW-p$PART-$d" --days "$d" --model data/models/model.json --out "$RUNNER_TEMP/out" "${LAT[@]}" > "$RUNNER_TEMP/bt-$d.log" 2>&1 || rc=$?
+            node --import tsx research/historyTwin.ts --stage backtest --dir "$DIR" --name "$HOW-p$PART-$d" --days "$d" --model data/models/model.json --out "$RUNNER_TEMP/out" "${LAT[@]}" "${POS[@]}" > "$RUNNER_TEMP/bt-$d.log" 2>&1 || rc=$?
             if [ "$rc" -ne 0 ]; then
               if [ "$BLIND" = true ]; then echo "[twin] confirm backtest $HOW part $PART: day $((DONE + 1)) of ${#MINE[@]} failed (exit $rc); the log is withheld on the confirm split: $(grep -m1 -E '^[A-Za-z]*Error' "$RUNNER_TEMP/bt-$d.log" | cut -c1-160)"
               else tail -5 "$RUNNER_TEMP/bt-$d.log" | cut -c1-200; fi
               exit 1
             fi
-            [ "$BLIND" = true ] || grep '^\[fidelity\]' "$RUNNER_TEMP/bt-$d.log" | grep -v ' windows: ' | cut -c1-300
+            [ "$BLIND" = true ] || grep -E '^\[fidelity\]|^\[twin\] positions' "$RUNNER_TEMP/bt-$d.log" | grep -v ' windows: ' | cut -c1-300
             DONE=$((DONE + 1))
           done
           [ "$BLIND" != true ] || echo "[twin] confirm backtest $HOW part $PART: $DONE of ${#MINE[@]} day(s) done (the per-day lines stay in the runner's own log file; nothing per day is printed)"
@@ -1169,6 +1179,31 @@ jobs:
           for p in r['paired']:
               print(f"{p['day']}: both {p['both']}, missing {p['onlyReal15m']}, quote off {p['quoteMaeC']:.2f}c, index off {p['indexMaeBps']:.1f} bps, results {p['resultsAgree']}/{p['results']}")
           PY
+      # R3a (RUNBOOK 3.5): where the twin's extra entries come from, read from the per-position files the dev and custom legs kept on Drive beside their
+      # per-window files (the folder the step "The per-window P&L from Drive" read). REPORT ONLY: counts, never part of the pass or fail, never a failure of
+      # this job (continue-on-error, a time limit, and every exit swallowed), nothing on the confirm split, and a comment of its own so it cannot push the
+      # verdict's comment over GitHub's size limit. A run made before R3a has no such files: the script says so in one line.
+      - name: The per-position report (R3a, report only)
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.backtests && needs.build.outputs.split != 'confirm' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPLIT: ${{ needs.build.outputs.split }}
+          JUDGED: ${{ needs.build.outputs.days }}
+        run: |
+          set -uo pipefail
+          [ "$SPLIT" != confirm ] || exit 0
+          [ -f .github/scripts/twin-positions.py ] || { echo "[twin] positions report: .github/scripts/twin-positions.py is not on this ref (RUNBOOK 3.0 check 1e), so there is no report"; exit 0; }
+          L="$RUNNER_TEMP/positions.log"
+          timeout 120 python3 .github/scripts/twin-positions.py "$RUNNER_TEMP/in" "${{ github.run_id }}" --split "$SPLIT" --judged "$JUDGED" > "$L" 2>&1 || true
+          cat "$L"
+          # only the report's own lines go in the comment, and not the one line that says there is nothing to report
+          grep '^\[twin\]' "$L" | grep -v '^\[twin\] no per-position files' > "$RUNNER_TEMP/positions.txt" || true
+          if [ -s "$RUNNER_TEMP/positions.txt" ]; then
+            { echo "History twin positions, run ${{ github.run_id }}"; echo; echo '```'; head -c 60000 "$RUNNER_TEMP/positions.txt" | cut -c1-400; echo '```'; } > "$RUNNER_TEMP/positions.md"
+            gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/positions.md" --silent || echo "could not post the comment"
+          fi
+          exit 0
       - name: Report (commit comment)
         if: always()
         env:
@@ -1301,6 +1336,32 @@ jobs:
             LOOK=(--confirm-look "$N" --confirm-look-note "$LOOK_NOTE")
           fi
           node --import tsx research/historyTwin.ts --stage verdict --out data/twin "${LOOK[@]}" 2>&1 | tee -a "$RUNNER_TEMP/verdict.log" | grep -E '^\[twin\]|Error'
+      # R3a (RUNBOOK 3.5): the per-position report of the run being re-read, after its verdict (the folder the legs' windows step read, so the same Drive tree).
+      # REPORT ONLY and numbering nothing: counts, never part of the pass or fail, never a failure of this job (continue-on-error, a time limit, every exit
+      # swallowed), dev and custom only (a confirm split's report is skipped without a word, and so is a run whose split is not on record), a comment of its
+      # own. A run made before R3a, or one that kept no windows, has no such files: the script says so in one line.
+      - name: The per-position report (R3a, report only)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.reverdict_run }}
+        run: |
+          set -uo pipefail
+          [ -s data/twin/split.json ] || exit 0
+          SPLIT=$(python3 -c "import json; print(json.load(open('data/twin/split.json'))['name'])" 2>/dev/null || echo '')
+          [ -n "$SPLIT" ] && [ "$SPLIT" != confirm ] || exit 0
+          JUDGED=$(python3 -c "import json; print(','.join(json.load(open('data/twin/split.json'))['judge']))" 2>/dev/null || echo '')
+          [ -f .github/scripts/twin-positions.py ] || { echo "[twin] positions report: .github/scripts/twin-positions.py is not on this ref (RUNBOOK 3.0 check 1e), so there is no report"; exit 0; }
+          L="$RUNNER_TEMP/positions.log"
+          timeout 120 python3 .github/scripts/twin-positions.py "$RUNNER_TEMP/in" "$RUN" --split "$SPLIT" --judged "$JUDGED" > "$L" 2>&1 || true
+          cat "$L"
+          # only the report's own lines go in the comment, and not the one line that says there is nothing to report
+          grep '^\[twin\]' "$L" | grep -v '^\[twin\] no per-position files' > "$RUNNER_TEMP/positions.txt" || true
+          if [ -s "$RUNNER_TEMP/positions.txt" ]; then
+            { echo "History twin positions of run $RUN (re-verdict run ${{ github.run_id }})"; echo; echo '```'; head -c 60000 "$RUNNER_TEMP/positions.txt" | cut -c1-400; echo '```'; } > "$RUNNER_TEMP/positions.md"
+            gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/positions.md" --silent || echo "could not post the comment"
+          fi
+          exit 0
       - name: Report (commit comment)
         if: always()
         env:

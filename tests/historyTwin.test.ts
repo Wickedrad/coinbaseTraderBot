@@ -3720,3 +3720,474 @@ test('the workflow splits twin-windows.py\'s exit code in both jobs: 0 whole, 3 
   // the WARNING is reached by exit 3 only: nothing else prints it
   assert.equal((rev.match(/WARNING: the per-window P&L on Drive/g) ?? []).length, 1);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// ---- R3a: where does the depth twin's extra trading come from? The per-position dump of the backtest legs, the comparison script and their wiring.
+// REPORT ONLY: no simulator, judge or engine byte changes, the windows files and the [fidelity] lines are the same with and without the dump, and a confirm leg
+// writes and prints nothing new. The stage tests below run a real backtest (identity model) over a synthetic recording of about a second; the rest is
+// pure, a python3 script on fixtures, or the workflow's own steps with a stubbed node, gh and Drive.
+import { buildPositions, POSITION_LOSER_CENTS, positionAsset, positionHourly, positionsLines, POSITIONS_VERSION, type PositionsFile, type TradeLike } from '../research/historyTwin';
+import { dumpPositions, runBacktestLeg, type LegRun } from '../research/historyTwin';
+
+const POSITIONS_PY = path.join(ROOT, '.github/scripts/twin-positions.py');
+
+/** A recorded day the backtest can trade: `assets` each list a 15-minute Up/Down contract every quarter hour of the first two hours, with a quote and a
+ *  trade every few seconds, the index, and a result. The decision model is the identity one (no model file), so it enters often: enough positions to read. */
+function btRecording(dir: string, day: string, assets: ReadonlyArray<readonly [string, number]> = [['BTC', 70000], ['ETH', 3500], ['SOL', 180]]): void {
+  const t0 = Date.parse(`${day}T00:00:00Z`), ev: Array<Record<string, unknown>> = [];
+  for (let q = 0; q < 8; q++) {
+    const open = t0 + q * 15 * MIN, close = open + 15 * MIN;
+    for (const [asset, px] of assets) {
+      const tk = `KX${asset}15M-${day.slice(8)}NOV${String(q).padStart(4, '0')}-00`;
+      ev.push({ t: open - MIN, k: 'market', ticker: tk, series: `KX${asset}15M`, asset, kind: 'updown', strike: px, cap: null, openTime: open, closeTime: close });
+      for (let t = open; t <= close; t += 5000) {
+        const mid = 0.5 + Math.sin(t / 60000 + px) * 0.2;
+        ev.push({ t, k: 'index', asset, value: px + Math.sin(t / 60000) * px / 800 });
+        ev.push({ t, k: 'book', ticker: tk, bids: [{ price: +(mid - 0.01).toFixed(2), size: 100 }], asks: [{ price: +(mid + 0.01).toFixed(2), size: 120 }] });
+        if ((t - open) % 15000 === 0) ev.push({ t: t + 1, k: 'trade', ticker: tk, price: 0.5, count: 3, takerSide: 'yes', ts: t + 1 });
+      }
+      ev.push({ t: close + 1000, k: 'result', ticker: tk, result: q % 3 === 0 ? 'no' : 'yes' });
+    }
+  }
+  ev.sort((a, b) => (a.t as number) - (b.t as number));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, `md-${day}.jsonl.gz`), zlib.gzipSync(ev.map((e) => JSON.stringify(e)).join('\n') + '\n'));
+}
+/** `--stage backtest` as a leg runs it (a subprocess: the engine reads the environment once). */
+function runLeg(dir: string, out: string, name: string, days: string, extra: string[] = []) {
+  return spawnSync(process.execPath, ['--import', 'tsx', 'research/historyTwin.ts', '--stage', 'backtest', '--dir', dir, '--name', name, '--days', days, '--model', path.join(tmpDir(), 'no-model.json'), '--out', out, ...extra],
+    { encoding: 'utf8', env: { ...process.env, TRADING_MODE: 'paper', AUTO_TRAIN: 'off', DATA_DIR: tmpDir() } });
+}
+const fidelityLines = (stdout: string) => stdout.split('\n').filter((l) => l.startsWith('[fidelity]')).map((l) => l.replace(/\(\d+\.\d min\)/g, '(T min)'));
+const positionLines = (stdout: string) => stdout.split('\n').filter((l) => l.startsWith('[twin] positions'));
+/** What a public log must never carry: a date, a time of day, an epoch, a ticker, a per-window or per-position list. */
+const publicSafe = (lines: string[], what: string) => {
+  for (const l of lines) {
+    assert.ok(!/\d{4}-\d\d-\d\d/.test(l), `${what}: no date in "${l}"`);
+    assert.ok(!/KX[A-Z0-9]|-26NOV|T\d\d:\d\d|\b\d{2}:\d{2}\b/.test(l), `${what}: no ticker or time in "${l}"`);
+    assert.ok(!/\d{9,}/.test(l), `${what}: no epoch or long number in "${l}"`);
+    assert.ok(!/ windows: /.test(l), `${what}: not the leg step's per-window filter in "${l}"`);
+    assert.ok(l.length < 300, `${what}: the leg step cuts lines at 300 characters (${l.length})`);
+  }
+};
+
+const at = (day: number, hh: number, mm = 0) => Date.UTC(2026, 10, day, hh, mm);
+const trade = (ticker: string, closeTs: number, pnl: number, contracts = 30): TradeLike => ({ ticker, closeTs, pnl, contracts });
+/** Settled positions of the 13th (judged), around it: a loser, a boundary, hourly strikes, an unknown asset, a position of the day before (warm-up) and after, and edges at midnight. */
+function fixtureRun() {
+  const trades: TradeLike[] = [
+    trade('KXBTC15M-26NOV131215-00', at(13, 12, 15), -7.5, 30), trade('KXETH15M-26NOV131215-00', at(13, 12, 15), 1.234, 30),
+    trade('KXSOL15M-26NOV131230-00', at(13, 12, 30), -0.126, 20), trade('KXXRP15M-26NOV131230-00', at(13, 12, 30), -5, 20),
+    trade('KXXRP15M-26NOV131245-00', at(13, 12, 45), -5.01, 10), trade('KXDOGE15M-26NOV131300-00', at(13, 13, 0), 2, 15),
+    trade('KXBTCD-26NOV1313-T70000', at(13, 13, 0), -20, 15), trade('KXETH-26NOV1313-B3500', at(13, 13, 0), 0.4, 15),
+    trade('KXBTC15M-26NOV122345-00', at(12, 23, 45), 3, 40), trade('KXBTC15M-26NOV130000-00', at(13, 0, 0), 3, 40),
+    trade('KXBTC15M-26NOV140000-00', at(14, 0, 0), 4, 25), trade('KXBTC15M-26NOV140015-00', at(14, 0, 15), 5, 25), trade('KXBTC15M-NAN', NaN, 5, 1),
+  ];
+  const windows = new Map<number, { contracts: number; fills?: number }>([[at(13, 12, 15), { contracts: 30, fills: 5 }], [at(13, 12, 30), { contracts: 20, fills: 4 }], [at(13, 12, 45), { contracts: 10, fills: 2 }], [at(13, 13, 0), { contracts: 15, fills: 3 }],
+    [at(13, 15, 0), { contracts: 0, fills: 0 }], [at(14, 0, 0), { contracts: 25, fills: 6 }], [at(12, 23, 45), { contracts: 40, fills: 9 }], [at(14, 0, 15), { contracts: 25, fills: 1 }]]);
+  return { trades, windows, entryEvaluations: 31545, fills: 120, contracts: 1700 };
+}
+
+test('R3a: buildPositions keeps the judged day\'s settled positions by asset, kind, close time, window contracts and cents; a midnight close belongs to the day before; the totals are the run\'s and the day\'s', () => {
+  const f = buildPositions(fixtureRun(), ['2026-11-13']);
+  assert.equal(f.version, POSITIONS_VERSION); assert.deepEqual(f.days, ['2026-11-13']);
+  // 12:15 BTC loser and ETH, 12:30 SOL and XRP, 12:45 XRP loser, 13:00 DOGE / BTC hourly / ETH bracket, then the contract closing at midnight (it belongs to the 13th); NOT the 12th's 23:45, NOT the close at 13th 00:00 (the 12th's), NOT the 14th's, NOT the NaN
+  assert.deepEqual(f.positions.map((p) => [p.asset, p.closeTs, p.hourly, p.windowContracts, p.pnl]), [
+    ['BTC', at(13, 12, 15), false, 30, -750], ['ETH', at(13, 12, 15), false, 30, 123], ['SOL', at(13, 12, 30), false, 20, -13], ['XRP', at(13, 12, 30), false, 20, -500],
+    ['XRP', at(13, 12, 45), false, 10, -501], ['BTC', at(13, 13, 0), true, 15, -2000], ['ETH', at(13, 13, 0), true, 15, 40], ['other', at(13, 13, 0), false, 15, 200], ['BTC', at(14, 0, 0), false, 25, 400],
+  ].sort((a, b) => (a[1] as number) - (b[1] as number) || ((a[0] as string) < (b[0] as string) ? -1 : (a[0] as string) > (b[0] as string) ? 1 : 0)));
+  for (const p of f.positions) { assert.deepEqual(Object.keys(p).sort(), ['asset', 'closeTs', 'hourly', 'pnl', 'windowContracts']); assert.ok(Number.isInteger(p.pnl) && Number.isInteger(p.windowContracts)); }
+  assert.ok(!JSON.stringify(f).includes('KX'), 'no ticker in the file');
+  // the whole run (warm-up included), and the judged day from the windows that traded (the empty window and the other days' do not count)
+  assert.deepEqual(f.totals, { entryEvaluations: 31545, fills: 120, contracts: 1700 });
+  assert.deepEqual(f.day, { windows: 5, fills: 5 + 4 + 2 + 3 + 6, contracts: 30 + 20 + 10 + 15 + 25 });
+  // another judged day, or two: the same filter as the windows file's
+  assert.deepEqual(buildPositions(fixtureRun(), ['2026-11-14']).positions.map((p) => p.pnl), [500], 'the 14th: only the 00:15 close');
+  assert.equal(buildPositions(fixtureRun(), ['2026-11-12', '2026-11-14']).positions.length, 3, 'two days: the 12th\'s 23:45 and the 13th\'s 00:00 close, and the 14th\'s 00:15');
+  assert.equal(buildPositions({ ...fixtureRun(), trades: [] }, ['2026-11-13']).positions.length, 0);
+  // the asset and the strike kind come from the series prefix
+  assert.deepEqual(['KXBTC15M-A', 'KXETH15M-A', 'KXSOL15M-A', 'KXXRP15M-A', 'KXDOGE15M-A', 'KXBTCD-A', 'KXETH-A', 'WEIRD'].map(positionAsset), ['BTC', 'ETH', 'SOL', 'XRP', 'other', 'BTC', 'ETH', 'other']);
+  assert.deepEqual(['KXBTC15M-A', 'KXBTCD-A', 'KXETH-A', 'KXSOLD-A'].map(positionHourly), [false, true, true, true]);
+  assert.equal(POSITION_LOSER_CENTS, -500);
+});
+
+test('R3a: the dump\'s day filter is replayFidelity\'s onDays filter (a window closing at midnight belongs to the day before), key for key', async () => {
+  const { onDays } = await import('../research/replayFidelity');
+  const keys = [at(12, 23, 59), at(13, 0, 0), at(13, 0, 1), at(13, 12, 0), at(13, 23, 59), at(14, 0, 0), at(14, 0, 1), NaN].filter(Number.isFinite);
+  for (const day of ['2026-11-12', '2026-11-13', '2026-11-14']) {
+    const viaWindows = [...onDays(new Map(keys.map((k) => [k, { pnl: 0, contracts: 1, fees: 0 }])), [day]).keys()].sort();
+    const viaDump = buildPositions({ trades: keys.map((k) => trade('KXBTC15M-A', k, 1)), windows: new Map(), entryEvaluations: 0, fills: 0, contracts: 0 }, [day]).positions.map((p) => p.closeTs).sort();
+    assert.deepEqual(viaDump, viaWindows, `the day ${day}`);
+  }
+});
+
+test('R3a: positionsLines prints counts only: by asset, strike kind and 6-hour UTC close bucket, with no date, time, ticker, epoch or per-window figure', () => {
+  const f = buildPositions(fixtureRun(), ['2026-11-13']);
+  const lines = positionsLines('depth-p2-2026-11-13', f);
+  publicSafe(lines, 'fixture');
+  assert.deepEqual(lines, [
+    '[twin] positions depth p2: 9 settled positions in 5 windows, 3 losers (below -$5)',
+    "[twin] positions depth p2 totals: the leg's run (warm-up day included) 31,545 entry evaluations, 120 fills, 1,700 contracts; the judged day 5 traded windows, 20 fills, 100 contracts",
+    '[twin] positions depth p2 BTC: 3 positions, 3 windows, 2 losers, 70 window contracts (shared with the other assets), 0.10 positions per 1,000 entry evaluations',
+    '[twin] positions depth p2 ETH: 2 positions, 2 windows, 0 losers, 45 window contracts (shared with the other assets), 0.06 positions per 1,000 entry evaluations',
+    '[twin] positions depth p2 SOL: 1 positions, 1 windows, 0 losers, 20 window contracts (shared with the other assets), 0.03 positions per 1,000 entry evaluations',
+    '[twin] positions depth p2 XRP: 2 positions, 2 windows, 1 losers, 30 window contracts (shared with the other assets), 0.06 positions per 1,000 entry evaluations',
+    '[twin] positions depth p2 other: 1 positions, 1 windows, 0 losers, 15 window contracts (shared with the other assets), 0.03 positions per 1,000 entry evaluations',
+    '[twin] positions depth p2 by strike: 2 hourly-strike (1 losers), 7 15-minute (2 losers)',
+    '[twin] positions depth p2 by UTC close hour: 00-05 0, 06-11 0, 12-17 8, 18-23 1',
+  ]);
+  // the sums agree: the assets, the strike kinds and the hour buckets each add up to the positions
+  const n = (re: RegExp) => lines.map((l) => re.exec(l)).filter(Boolean).map((m) => Number(m![1]));
+  assert.equal(n(/ (?:BTC|ETH|SOL|XRP|other): (\d+) positions/).reduce((a, b) => a + b, 0), 9);
+  // no 'other' line when no position is of an unknown asset; a leg name that does not parse prints 'leg' (never the name, which holds the date); no evaluations: n/a
+  const quiet = buildPositions({ trades: [trade('KXBTC15M-A', at(13, 1, 0), 1)], windows: new Map(), entryEvaluations: 0, fills: 0, contracts: 0 }, ['2026-11-13']);
+  const q = positionsLines('weird-name-2026-11-13', quiet);
+  publicSafe(q, 'quiet'); assert.ok(!q.some((l) => / other:/.test(l)) && q.every((l) => l.startsWith('[twin] positions leg')), q.join('\n')); assert.ok(q.some((l) => /BTC: 1 positions.* n\/a positions per 1,000/.test(l)));
+  const none = positionsLines('real-p0-2026-11-13', buildPositions({ ...fixtureRun(), trades: [] }, ['2026-11-13']));
+  assert.equal(none[0], '[twin] positions real p0: 0 settled positions in 0 windows, 0 losers (below -$5)');
+});
+
+test('R3a: --positions writes positions-NAME.json beside the windows file (the judged day only) and prints counts only; the windows file and every [fidelity] line are the same with and without it, and without it nothing new is written or printed', () => {
+  const dir = tmpDir(); btRecording(dir, '2026-11-12'); btRecording(dir, '2026-11-13');
+  const name = 'depth-p2-2026-11-13', a = path.join(tmpDir(), 'a'), b = path.join(tmpDir(), 'b');
+  const withDump = runLeg(dir, a, name, '2026-11-13', ['--positions']), without = runLeg(dir, b, name, '2026-11-13');
+  assert.equal(withDump.status, 0, withDump.stderr); assert.equal(without.status, 0, without.stderr);
+  assert.deepEqual(fs.readdirSync(a).sort(), [`positions-${name}.json`, `windows-${name}.json`]); assert.deepEqual(fs.readdirSync(b), [`windows-${name}.json`], 'without the flag the stage writes what it always wrote');
+  assert.equal(fs.readFileSync(path.join(a, `windows-${name}.json`), 'utf8'), fs.readFileSync(path.join(b, `windows-${name}.json`), 'utf8'), 'the windows file is the same bytes');
+  assert.deepEqual(fidelityLines(withDump.stdout), fidelityLines(without.stdout)); assert.ok(fidelityLines(without.stdout).length >= 6, 'the [fidelity] lines are there');
+  assert.deepEqual(positionLines(without.stdout), [], 'no [twin] positions line without the flag');
+  // the file
+  const f = JSON.parse(fs.readFileSync(path.join(a, `positions-${name}.json`), 'utf8')) as PositionsFile;
+  const win = new Map<number, { pnl: number; contracts: number; fills: number }>(JSON.parse(fs.readFileSync(path.join(a, `windows-${name}.json`), 'utf8')));
+  assert.equal(f.version, POSITIONS_VERSION); assert.deepEqual(f.days, ['2026-11-13']); assert.ok(f.positions.length >= 6, `${f.positions.length} positions`);
+  const lines = fidelityLines(without.stdout), settled = Number(/(\d+) settled positions/.exec(lines.join('\n'))![1]), evals = Number(/(\d+) entry evaluations/.exec(lines.join('\n'))![1]);
+  assert.ok(f.positions.length < settled, `the warm-up day's positions are not in the dump (${f.positions.length} of the run's ${settled})`);
+  assert.equal(f.totals.entryEvaluations, evals, 'the run\'s entry evaluations, as the [fidelity] line has them');
+  assert.ok(f.positions.every((p) => ['BTC', 'ETH', 'SOL'].includes(p.asset) && p.hourly === false && Number.isInteger(p.pnl) && win.has(p.closeTs) && new Date(p.closeTs - 1).toISOString().startsWith('2026-11-13')));
+  assert.deepEqual(new Set(f.positions.map((p) => p.asset)), new Set(['BTC', 'ETH', 'SOL']), 'every asset of the recording traded');
+  // the day's totals are the windows file's own numbers
+  const traded = [...win.values()].filter((w) => w.contracts > 0);
+  assert.deepEqual(f.day, { windows: traded.length, fills: traded.reduce((x, w) => x + w.fills, 0), contracts: traded.reduce((x, w) => x + w.contracts, 0) });
+  // a window's P&L is the sum of its positions' (to the cent each, so within the number of positions in it)
+  for (const [k, w] of win) { const ps = f.positions.filter((p) => p.closeTs === k); if (ps.length) assert.ok(Math.abs(ps.reduce((x, p) => x + p.pnl, 0) - Math.round(w.pnl * 100)) <= ps.length, `a window's cents ${ps.map((p) => p.pnl)} vs ${w.pnl}`); }
+  // what is printed: counts only, from the file
+  assert.deepEqual(positionLines(withDump.stdout), positionsLines(name, f)); publicSafe(positionLines(withDump.stdout), 'the leg');
+  assert.ok(positionLines(withDump.stdout).length === 8 && positionLines(withDump.stdout)[0].startsWith('[twin] positions depth p2: '), positionLines(withDump.stdout).join('\n'));
+  // the leg step prints only the [fidelity] lines and these: nothing else the stage prints (the engine's tables) matches
+  assert.ok(positionLines(withDump.stdout).every((l) => /^\[twin\] positions /.test(l)));
+});
+
+test('R3a: backtestDir keeps its signature and its windows; backtestDirRun gives the same windows and the whole result (the settled positions, the entry evaluations)', () => {
+  const dir = tmpDir(); btRecording(dir, '2026-11-13');
+  const out = path.join(tmpDir(), 'both.json');
+  const script = `import fs from 'fs'; const { backtestDir, backtestDirRun } = await import('./research/replayFidelity.ts'); const m = process.argv[1] + '/no-model.json'; const a = await backtestDir(process.argv[2], m); const b = await backtestDirRun(process.argv[2], m); fs.writeFileSync(process.argv[3], JSON.stringify({ a: [...a], b: [...b.windows], trades: b.result.trades.length, ev: b.result.entryEvaluations }));`;
+  const r = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, tmpDir(), dir, out], { encoding: 'utf8', env: { ...process.env, TRADING_MODE: 'paper', AUTO_TRAIN: 'off', DATA_DIR: tmpDir() } });
+  assert.equal(r.status, 0, r.stderr);
+  const j = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.deepEqual(j.a, j.b); assert.ok(j.a.length >= 6 && j.trades >= 6 && j.ev > 0);
+  // the [fidelity] lines of the two calls are the same lines (the new function adds none)
+  const per = fidelityLines(r.stdout), half = per.length / 2; assert.equal(per.length % 2, 0); assert.deepEqual(per.slice(0, half), per.slice(half));
+});
+
+test('R3a: a leg on a confirm day is refused --positions BEFORE the backtest starts (nothing written, nothing printed); without the flag it writes only the windows file and prints no positions line', () => {
+  const none = path.join(tmpDir(), 'none');
+  for (const days of ['2026-11-18', '2026-11-12,2026-11-19', '2026-11-20']) {
+    const r = runLeg(path.join(tmpDir(), 'nodir'), none, 'depth-p0-2026-11-18', days, ['--positions']);
+    assert.notEqual(r.status, 0, days); assert.match(r.stderr, /^\[twin\] ERROR: --positions is for dev and custom legs only: a leg that reads a confirm day writes and prints no per-position file/m);
+    assert.ok(!fs.existsSync(none), `${days}: not even the out folder is made`); assert.deepEqual(positionLines(r.stdout), []); assert.ok(!/\[fidelity\]/.test(r.stdout), 'the refusal comes before the backtest');
+  }
+  // a confirm leg as the workflow runs it (no flag): the windows file only, nothing positions-like printed
+  const dir = tmpDir(); btRecording(dir, '2026-11-17'); btRecording(dir, '2026-11-18');
+  const out = path.join(tmpDir(), 'out'), r = runLeg(dir, out, 'depth-p0-2026-11-18', '2026-11-18');
+  assert.equal(r.status, 0, r.stderr); assert.deepEqual(fs.readdirSync(out), ['windows-depth-p0-2026-11-18.json']); assert.deepEqual(positionLines(r.stdout), []);
+  assert.ok(!/positions-/.test(r.stdout + r.stderr.replace(/settled positions/g, '')), 'no positions file is named');
+  // a custom or dev leg of the FIT days (never confirm) is asked for it freely
+  const fit = tmpDir(); btRecording(fit, '2026-11-11'); btRecording(fit, '2026-11-12');
+  const o2 = path.join(tmpDir(), 'o'), r2 = runLeg(fit, o2, 'real-p1-2026-11-12', '2026-11-12', ['--positions']);
+  assert.equal(r2.status, 0, r2.stderr); assert.ok(fs.existsSync(path.join(o2, 'positions-real-p1-2026-11-12.json'))); assert.match(positionLines(r2.stdout)[0], /^\[twin\] positions real p1: /);
+});
+
+test('R3a: a dump that cannot be written is one warning line, not a red leg: the windows file is whole and the exit code is 0', () => {
+  const dir = tmpDir(); btRecording(dir, '2026-11-13');
+  const out = path.join(tmpDir(), 'out'), name = 'depth-p0-2026-11-13';
+  fs.mkdirSync(path.join(out, `positions-${name}.json`), { recursive: true }); // a folder where the file goes: the write fails (EISDIR)
+  const r = runLeg(dir, out, name, '2026-11-13', ['--positions']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(positionLines(r.stdout), ['[twin] positions depth p0: WARNING: the per-position file was not written (EISDIR); the windows file is whole']);
+  assert.ok(fs.statSync(path.join(out, `windows-${name}.json`)).isFile() && JSON.parse(fs.readFileSync(path.join(out, `windows-${name}.json`), 'utf8')).length >= 6);
+  publicSafe(positionLines(r.stdout), 'the warning');
+});
+
+test('R3a: runBacktestLeg uses backtestDirRun when the ref has it and falls back to backtestDir when replayFidelity.ts predates it (the two files pushed apart): the same windows, no result, no TypeError', async () => {
+  const w = new Map([[1, { pnl: 1, contracts: 2, fills: 1 }]]) as unknown as LegRun['windows'];
+  const result = { trades: [], windows: new Map(), entryEvaluations: 7, fills: 1, contracts: 2 } as unknown as NonNullable<LegRun['result']>;
+  const calls: string[] = [];
+  const oldRef = { backtestDir: async (d: string, m: string, e: Record<string, string>) => { calls.push(`dir ${d} ${m} ${JSON.stringify(e)}`); return w; } };
+  const gone = await runBacktestLeg(oldRef as never, 'D', 'M', { 'latency-ms': '250' });
+  assert.equal(gone.windows, w); assert.equal(gone.result, undefined, 'an old replayFidelity.ts has no result to dump'); assert.deepEqual(calls, ['dir D M {"latency-ms":"250"}']);
+  const newRef = { ...oldRef, backtestDirRun: async (d: string, m: string, e: Record<string, string>) => { calls.push(`run ${d} ${m} ${JSON.stringify(e)}`); return { windows: w, result }; } };
+  const there = await runBacktestLeg(newRef as never, 'D', 'M', {});
+  assert.equal(there.windows, w); assert.equal(there.result, result); assert.deepEqual(calls.slice(1), ['run D M {}'], 'backtestDir is not run a second time');
+  // the stage hands it the real module (a namespace with both exports), and the real file has the export the stage prefers
+  assert.match(fs.readFileSync(path.join(ROOT, 'research/replayFidelity.ts'), 'utf8'), /^export async function backtestDirRun\(/m);
+  assert.match(fs.readFileSync(path.join(ROOT, 'research/historyTwin.ts'), 'utf8'), /const run = await runBacktestLeg\(mod, dir, model, extra\);/);
+});
+
+test('R3a: dumpPositions writes the file and returns the counts-only lines; a run with no result (an old replayFidelity.ts) or an unwritable folder is the ONE warning line and writes nothing', () => {
+  const out = tmpDir(), name = 'depth-p2-2026-11-13', f = buildPositions(fixtureRun(), ['2026-11-13']);
+  const lines = dumpPositions(out, name, ['2026-11-13'], fixtureRun() as never);
+  assert.deepEqual(lines, positionsLines(name, f)); publicSafe(lines, 'the dump');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(out, `positions-${name}.json`), 'utf8')), JSON.parse(JSON.stringify(f)));
+  const none = tmpDir();
+  assert.deepEqual(dumpPositions(none, name, ['2026-11-13'], undefined), ['[twin] positions depth p2: WARNING: the per-position file was not written (no-backtestDirRun); the windows file is whole']);
+  assert.deepEqual(fs.readdirSync(none), [], 'no file is written without a result'); publicSafe(dumpPositions(none, name, ['2026-11-13'], undefined), 'the warning');
+  const missing = path.join(tmpDir(), 'absent'); // the folder is not there: the write fails with ENOENT, a warning and not a throw
+  assert.deepEqual(dumpPositions(missing, name, ['2026-11-13'], fixtureRun() as never), ['[twin] positions depth p2: WARNING: the per-position file was not written (ENOENT); the windows file is whole']);
+});
+
+test('R3a: the leg step asks dev and custom legs for --positions and prints their lines, never asks a confirm leg, and prints nothing positions-like there', () => {
+  const y = wf(), step = stepScript(y, 'Backtest');
+  assert.match(step, /POS=\(\); \[ "\$BLIND" = true \] \|\| POS=\(--positions\)/); assert.match(step, /"\$\{LAT\[@\]\}" "\$\{POS\[@\]\}" > "\$RUNNER_TEMP\/bt-\$d\.log"/);
+  assert.equal((step.match(/--positions/g) ?? []).length, 1, 'the flag is named once, in the line that sets POS: nowhere else');
+  const work = tmpDir(), bin = path.join(work, 'bin'), ws = path.join(work, 'ws'), tmp = path.join(work, 'tmp');
+  fs.mkdirSync(bin); fs.mkdirSync(tmp);
+  for (const x of ['2026-11-12', '2026-11-13', '2026-11-17', '2026-11-18', '2026-11-19']) { fs.mkdirSync(path.join(ws, 'data/twin/depth'), { recursive: true }); fs.writeFileSync(path.join(ws, 'data/twin/depth', `md-${x}.jsonl.gz`), 'x'); }
+  // a stub node that records its arguments and prints what the stage prints, the positions lines only when asked
+  fs.writeFileSync(path.join(bin, 'node'), `#!/usr/bin/env bash
+echo "$*" >> "$RUNNER_TEMP/node-args.txt"
+out=; name=; pos=; for ((i=1;i<=$#;i++)); do case "\${!i}" in --out) j=$((i+1)); out=\${!j};; --name) j=$((i+1)); name=\${!j};; --positions) pos=1;; esac; done
+echo "[fidelity] day: 123 entry evaluations, 45 orders sent, 6 fills, 7 contracts"
+echo "[fidelity] day windows: 11-18T12:00 2ct $4.20"
+echo "[engine table] positions of the day are not a twin line"
+if [ -n "$pos" ]; then echo "[twin] positions depth p0: 9 settled positions in 6 windows, 3 losers (below -\\$5)"; fi
+mkdir -p "$out"; echo '[]' > "$out/windows-$name.json"; [ -z "$pos" ] || echo '{}' > "$out/positions-$name.json"
+`, { mode: 0o755 });
+  const run = (split: string, days: string) => { fs.rmSync(path.join(tmp, 'node-args.txt'), { force: true }); fs.rmSync(path.join(tmp, 'out'), { recursive: true, force: true });
+    const r = bash(stepScript(y, 'Backtest'), { PATH: `${bin}:${process.env.PATH}`, SPLIT: split, DAYS: days, PARTS: '2', HOW: 'depth', PART: '0', GITHUB_WORKSPACE: ws, RUNNER_TEMP: tmp }, ws);
+    return { r, args: fs.existsSync(path.join(tmp, 'node-args.txt')) ? fs.readFileSync(path.join(tmp, 'node-args.txt'), 'utf8') : '', files: fs.existsSync(path.join(tmp, 'out')) ? fs.readdirSync(path.join(tmp, 'out')).sort() : [] }; };
+  const dev = run('dev', '2026-11-12,2026-11-13');
+  assert.equal(dev.r.status, 0, dev.r.stderr); assert.match(dev.args, /--stage backtest .* --positions\n/); assert.match(dev.r.stdout, /^\[twin\] positions depth p0: 9 settled positions in 6 windows, 3 losers \(below -\$5\)$/m, 'the leg step lets the line through');
+  assert.ok(!/engine table/.test(dev.r.stdout), 'only [fidelity] and [twin] positions lines reach the log'); assert.ok(!/ windows: /.test(dev.r.stdout));
+  assert.deepEqual(dev.files, ['positions-depth-p0-2026-11-12.json', 'windows-depth-p0-2026-11-12.json']);
+  const custom = run('custom', '2026-11-12,2026-11-13'); assert.match(custom.args, /--positions/);
+  const blind = run('confirm', '2026-11-18,2026-11-19');
+  assert.equal(blind.r.status, 0, blind.r.stderr); assert.ok(!/--positions/.test(blind.args), `a confirm leg is never asked: ${blind.args}`);
+  assert.ok(!/\[twin\] positions|\[fidelity\]/.test(blind.r.stdout + blind.r.stderr), `nothing positions-like on a confirm split: ${blind.r.stdout}`); assert.match(blind.r.stdout, /\[twin\] confirm backtest depth part 0: 1 of 1 day\(s\) done/);
+  assert.deepEqual(blind.files, ['windows-depth-p0-2026-11-18.json'], 'the windows file only: no positions file');
+  // a confirm run whose stage were handed the flag anyway fails the leg loudly (the stage's own refusal, tested above), and prints no mechanics
+  assert.match(y, /A confirm leg is never asked: the stage refuses the flag on a confirm day/);
+});
+
+// ---- R3a: .github/scripts/twin-positions.py (the comparison report), on fixtures ----
+
+const prow = (asset: string, closeTs: number, pnl: number, hourly = false) => ({ asset, closeTs, hourly, windowContracts: 10, pnl });
+type PosLeg = { day: string; rows: Array<ReturnType<typeof prow>>; evals: number };
+/** The legs' folders with the per-position files, as drive_lab.sh get leaves them: twin-HOW-pI/positions-HOW-pI-DAY.json (into `dir`, beside any windows files). */
+function posDir(have: Partial<Record<(typeof HOWS)[number], PosLeg[]>>, dir = tmpDir()): string {
+  for (const [how, legs] of Object.entries(have)) legs!.forEach((l, i) => {
+    const sub = path.join(dir, `twin-${how}-p${i}`); fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, `positions-${how}-p${i}-${l.day}.json`), JSON.stringify({ version: 1, days: [l.day], positions: l.rows, totals: { entryEvaluations: l.evals, fills: 0, contracts: 0 }, day: { windows: 0, fills: 0, contracts: 0 } }));
+  });
+  return dir;
+}
+const REAL1 = [prow('BTC', at(13, 12, 15), 100), prow('BTC', at(13, 12, 30), -800), prow('ETH', at(13, 12, 15), 50)], REAL2 = [prow('BTC', at(14, 3, 15), 20)];
+const DEPTH1 = [prow('BTC', at(13, 12, 15), 90), prow('BTC', at(13, 13, 0), -900), prow('BTC', at(13, 13, 15), 10), prow('ETH', at(13, 12, 15), 5), prow('ETH', at(13, 12, 30), 7), prow('SOL', at(13, 12, 30), 3, true)], DEPTH2 = [prow('BTC', at(14, 3, 15), 1), prow('BTC', at(14, 4, 15), 2)];
+const D2 = ['2026-11-13', '2026-11-14'];
+const posLegs = (): Partial<Record<(typeof HOWS)[number], PosLeg[]>> => ({
+  real: [{ day: D2[0], rows: REAL1, evals: 30000 }, { day: D2[1], rows: REAL2, evals: 50000 }], placebo: [{ day: D2[0], rows: REAL1, evals: 30000 }, { day: D2[1], rows: REAL2, evals: 50000 }],
+  requote: [{ day: D2[0], rows: [prow('BTC', at(13, 12, 15), 1)], evals: 20000 }, { day: D2[1], rows: [], evals: 20000 }], depth: [{ day: D2[0], rows: DEPTH1, evals: 20000 }, { day: D2[1], rows: DEPTH2, evals: 25000 }],
+});
+const runPositionsPy = (src: string, run: string, ...flags: string[]) => spawnSync('python3', ['-I', POSITIONS_PY, src, run, ...flags], { encoding: 'utf8' });
+const treeOf = (dir: string): string[] => fs.readdirSync(dir, { recursive: true, encoding: 'utf8' }).sort();
+
+test('twin-positions.py: requote, depth and placebo against real, per day and per asset and over the days: positions, windows, rate per 1,000 evaluations, losers, window overlap; counts only, exit 0, nothing written', () => {
+  const src = posDir(posLegs()), before = treeOf(src);
+  const r = runPositionsPy(src, '77', '--split', 'dev', '--judged', D2.join(','));
+  assert.equal(r.status, 0, r.stderr); assert.equal(r.stderr, '');
+  const lines = r.stdout.split('\n').filter(Boolean);
+  publicSafe(lines, 'the report');
+  assert.deepEqual(lines.slice(0, 5), ["[twin] positions report, run 77: 2 judged day(s) in date order; the legs' per-position files, counts only", ...HOWS.map((h) => `[twin] positions ${h}: 2 of 2 judged day(s) have a per-position file`)]);
+  const has = (l: string) => assert.ok(lines.includes(l), `${l}\n--- got ---\n${r.stdout}`);
+  // depth against real: day 1 has 6 positions in 4 windows against real's 3 in 2 (losers 1 and 1); the windows both have are 12:15 and 12:30, depth adds 13:00 and 13:15
+  has('[twin] positions depth vs real, day 1, all assets: positions 6 vs 3, windows 4 vs 2, per 1,000 entry evaluations 0.30 vs 0.10, losers 1 vs 1; windows both 2, real only 0, depth only 2');
+  has('[twin] positions depth vs real, day 1, BTC: positions 3 vs 2, windows 3 vs 2, per 1,000 entry evaluations 0.15 vs 0.07, losers 1 vs 1; windows both 1, real only 1, depth only 2');
+  has('[twin] positions depth vs real, day 1, SOL: positions 1 vs 0, windows 1 vs 0, per 1,000 entry evaluations 0.05 vs 0.00, losers 0 vs 0; windows both 0, real only 0, depth only 1');
+  has('[twin] positions depth vs real, day 2, all assets: positions 2 vs 1, windows 2 vs 1, per 1,000 entry evaluations 0.08 vs 0.02, losers 0 vs 0; windows both 1, real only 0, depth only 1');
+  // over both days the evaluations add up (45,000 against 80,000: 8 and 4 positions), the strike kinds and the close-hour buckets follow
+  has('[twin] positions depth vs real, 2 day(s), all assets: positions 8 vs 4, windows 6 vs 3, per 1,000 entry evaluations 0.18 vs 0.05, losers 1 vs 1; windows both 3, real only 0, depth only 3');
+  has('[twin] positions depth vs real, 2 day(s), hourly strikes: positions 1 vs 0, windows 1 vs 0, per 1,000 entry evaluations 0.02 vs 0.00, losers 0 vs 0; windows both 0, real only 0, depth only 1');
+  has('[twin] positions depth vs real, 2 day(s), UTC close hours 12-17: positions 6 vs 3, windows 4 vs 2, per 1,000 entry evaluations 0.13 vs 0.04, losers 1 vs 1; windows both 2, real only 0, depth only 2');
+  has('[twin] positions depth vs real, 2 day(s), UTC close hours 00-05: positions 2 vs 1, windows 2 vs 1, per 1,000 entry evaluations 0.04 vs 0.01, losers 0 vs 0; windows both 1, real only 0, depth only 1');
+  assert.ok(!lines.some((l) => /UTC close hours (06-11|18-23)/.test(l)), 'a bucket neither side has is left out');
+  // requote and the placebo (real itself: every window both, nothing only on either side)
+  has('[twin] positions requote vs real, day 1, all assets: positions 1 vs 3, windows 1 vs 2, per 1,000 entry evaluations 0.05 vs 0.10, losers 0 vs 1; windows both 1, real only 1, requote only 0');
+  has('[twin] positions placebo vs real, 2 day(s), all assets: positions 4 vs 4, windows 3 vs 3, per 1,000 entry evaluations 0.05 vs 0.05, losers 1 vs 1; windows both 3, real only 0, placebo only 0');
+  assert.ok(!lines.some((l) => /placebo vs real.*(real only [1-9]|placebo only [1-9])/.test(l)), 'the placebo shares every window');
+  // an asset neither side has gets no line; XRP is in none
+  assert.ok(!lines.some((l) => /, XRP:/.test(l)) && !lines.some((l) => /, other:/.test(l)));
+  assert.deepEqual(treeOf(src), before, 'it reads and writes nothing');
+  // without --judged every day found counts (the same report); --dates names the days; the confirm split reads nothing
+  assert.equal(runPositionsPy(src, '77', '--split', 'dev').stdout, r.stdout);
+  const dated = runPositionsPy(src, '77', '--dates', '--judged', D2.join(',')).stdout; assert.ok(dated.includes('depth vs real, 2026-11-13, all assets: positions 6 vs 3') && !dated.includes('day 1,'), dated.split('\n').slice(0, 7).join('\n'));
+  const blind = runPositionsPy(src, '77', '--split', 'confirm', '--judged', D2.join(',')); assert.equal(blind.status, 0); assert.equal(blind.stdout, '[twin] per-position report skipped: the confirm split is blind\n');
+});
+
+test('twin-positions.py: each all-assets line is followed by the two entry-evaluation counts (each source\'s own, they differ by source), and the docstring no longer says the denominators are the same', () => {
+  const src = posDir(posLegs()), lines = runPositionsPy(src, '77', '--split', 'dev', '--judged', D2.join(',')).stdout.split('\n').filter(Boolean);
+  const evalLines = lines.filter((l) => /: entry evaluations /.test(l));
+  // depth 20,000 and 25,000 against real's 30,000 and 50,000 (the day files' own run-wide counts); the days add up to 45,000 against 80,000
+  const want = (how: string, label: string, a: string, b: string) => {
+    const i = lines.indexOf(`[twin] positions ${how} vs real, ${label}: entry evaluations ${a} vs ${b} (each source's own run-wide count, warm-up day included; the rates above divide by these)`);
+    assert.ok(i > 0, `${how} ${label}\n${lines.join('\n')}`); assert.ok(lines[i - 1].startsWith(`[twin] positions ${how} vs real, ${label}: positions `), 'the counts follow their all-assets line');
+  };
+  want('depth', 'day 1, all assets', '20,000', '30,000'); want('depth', 'day 2, all assets', '25,000', '50,000'); want('depth', '2 day(s), all assets', '45,000', '80,000');
+  want('requote', 'day 1, all assets', '20,000', '30,000'); want('placebo', '2 day(s), all assets', '80,000', '80,000');
+  assert.ok(evalLines.every((l) => /, all assets: /.test(l)), 'only the all-assets lines carry the counts: the per-asset, per-kind and per-bucket lines share their denominator');
+  publicSafe(evalLines, 'the evaluation counts');
+  const py = fs.readFileSync(POSITIONS_PY, 'utf8');
+  assert.ok(!/the same for every source/.test(py), 'the denominators are not the same for every source'); assert.match(py, /OWN run-wide entry evaluations/); assert.match(py, /the rate gap is larger than the count gap/); assert.match(py, /so the asset rates add\s+up to the all-assets rate/);
+});
+
+test('twin-positions.py: a run with no per-position files says so in one line; a missing source, a missing day, a missing real side, an unreadable or foreign file are named and left out, and the exit code is always 0', () => {
+  // a run made before this round: windows files only (and an empty or absent folder): the one line, nothing else
+  const old = legsDir(wholeLegs(D2));
+  for (const [what, src] of [['windows files only', old], ['an empty folder', tmpDir()], ['no folder', path.join(tmpDir(), 'absent')]] as const) {
+    const r = runPositionsPy(src, '55', '--split', 'dev', '--judged', D2.join(',')); assert.equal(r.status, 0, what); assert.equal(r.stdout, '[twin] no per-position files on Drive for run 55\n', what); assert.equal(r.stderr, '', what);
+  }
+  // a missing source: said, and the others still print
+  const noRequote = posLegs(); delete noRequote.requote;
+  const a = runPositionsPy(posDir(noRequote), '55', '--judged', D2.join(','));
+  assert.equal(a.status, 0); assert.match(a.stdout, /^\[twin\] positions requote: 0 of 2 judged day\(s\) have a per-position file$/m); assert.match(a.stdout, /^\[twin\] positions requote vs real: no per-position files for requote, left out$/m);
+  assert.match(a.stdout, /^\[twin\] positions depth vs real, day 1, all assets: positions 6 vs 3/m); assert.ok(!/requote vs real, (day|2)/.test(a.stdout));
+  // a day only the real side has: compared on the days both have
+  const oneDay = posLegs(); oneDay.depth = [oneDay.depth![0]];
+  const b = runPositionsPy(posDir(oneDay), '55', '--judged', D2.join(','));
+  assert.match(b.stdout, /^\[twin\] positions depth: 1 of 2 judged day\(s\) have a per-position file$/m); assert.match(b.stdout, /depth vs real, 1 day\(s\), all assets: positions 6 vs 3, windows 4 vs 2, per 1,000 entry evaluations 0.30 vs 0.10/); assert.ok(!/depth vs real, day 2/.test(b.stdout));
+  // no real side: nothing to compare against
+  const noReal = posLegs(); delete noReal.real;
+  const c = runPositionsPy(posDir(noReal), '55', '--judged', D2.join(','));
+  assert.equal(c.status, 0); assert.match(c.stdout, /^\[twin\] positions real: 0 of 2 judged day\(s\) have a per-position file$/m); assert.match(c.stdout, /^\[twin\] positions: no real per-position files, so there is nothing to compare against$/m); assert.ok(!/ vs real, /.test(c.stdout));
+  // a source and a day with no day in common
+  const apart = posLegs(); apart.requote = [{ day: D2[1], rows: [], evals: 1 }]; apart.real = [{ day: D2[0], rows: REAL1, evals: 30000 }];
+  assert.match(runPositionsPy(posDir(apart), '55', '--judged', D2.join(',')).stdout, /^\[twin\] positions requote vs real: no judged day has both files, left out$/m);
+  // a truncated file, a file of another version, a row of the wrong type, and a file of a day that is not judged: none of them counts
+  const bad = posDir(posLegs());
+  fs.writeFileSync(path.join(bad, 'twin-depth-p0', `positions-depth-p0-${D2[0]}.json`), '{"truncated"');
+  fs.writeFileSync(path.join(bad, 'twin-requote-p0', `positions-requote-p0-${D2[0]}.json`), JSON.stringify({ version: 2, positions: [], totals: { entryEvaluations: 1 } }));
+  fs.writeFileSync(path.join(bad, 'twin-placebo-p1', `positions-placebo-p1-${D2[1]}.json`), JSON.stringify({ version: 1, positions: [{ asset: 'BTC', closeTs: 'x', pnl: 1, hourly: false }], totals: { entryEvaluations: 1 } }));
+  fs.writeFileSync(path.join(bad, 'twin-real-p0', 'positions-real-p0-2026-11-20.json'), JSON.stringify({ version: 1, positions: [prow('BTC', at(20, 1), 1)], totals: { entryEvaluations: 1 } }));
+  const d = runPositionsPy(bad, '55', '--judged', D2.join(','));
+  assert.equal(d.status, 0); assert.ok(!/Traceback/.test(d.stdout + d.stderr)); assert.match(d.stdout, /^\[twin\] positions depth: 1 of 2 judged day\(s\)/m); assert.match(d.stdout, /^\[twin\] positions requote: 1 of 2 judged day\(s\)/m); assert.match(d.stdout, /^\[twin\] positions placebo: 1 of 2 judged day\(s\)/m); assert.match(d.stdout, /^\[twin\] positions real: 2 of 2 judged day\(s\)/m);
+  // wrong arguments: a usage line on stderr and exit 0 (a report never fails a job)
+  const u = spawnSync('python3', ['-I', POSITIONS_PY, 'only-one-argument'], { encoding: 'utf8' }); assert.equal(u.status, 0); assert.match(u.stderr, /usage: twin-positions\.py WINDOWS_DIR RUN/); assert.equal(u.stdout, '');
+  assert.equal(spawnSync('python3', ['-I', POSITIONS_PY, 'a', 'b', '--bogus'], { encoding: 'utf8' }).status, 0);
+});
+
+test('an extra positions file in the legs\' tree changes nothing twin-windows.py reads or prints: its lines, its legs file and its four files are the same bytes; twin-positions.py reads positions files only', () => {
+  for (const [split, judged] of [['dev', J3], ['confirm', C3]] as Array<[string, string[]]>) {
+    const plain = legsDir(wholeLegs(judged)), extra = legsDir(wholeLegs(judged));
+    posDir({ real: judged.map((d) => ({ day: d, rows: REAL1, evals: 1 })), placebo: judged.map((d) => ({ day: d, rows: REAL1, evals: 1 })), requote: judged.map((d) => ({ day: d, rows: [], evals: 1 })), depth: judged.map((d) => ({ day: d, rows: DEPTH1, evals: 1 })) }, extra);
+    assert.ok(treeOf(extra).some((f) => /positions-/.test(f)) && !treeOf(plain).some((f) => /positions-/.test(f)));
+    const oa = path.join(tmpDir(), 'o'), ob = path.join(tmpDir(), 'o'), la = path.join(tmpDir(), 'legs.txt'), lb = path.join(tmpDir(), 'legs.txt');
+    const a = runWindowsPy(plain, oa, split, judged, la), b = runWindowsPy(extra, ob, split, judged, lb);
+    assert.equal(a.status, 0, a.stderr); assert.equal(b.status, 0, b.stderr); assert.equal(b.stdout, a.stdout, `${split}: the printed lines are the same bytes`); assert.equal(b.stderr, a.stderr);
+    assert.equal(fs.readFileSync(lb, 'utf8'), fs.readFileSync(la, 'utf8'));
+    assert.deepEqual(winFiles(ob), winFiles(oa)); assert.deepEqual(treeOf(ob), treeOf(oa), 'nothing positions-like is copied to the output folder');
+    for (const f of winFiles(oa)) assert.equal(fs.readFileSync(path.join(ob, f), 'utf8'), fs.readFileSync(path.join(oa, f), 'utf8'), `${split}: ${f}`);
+    // positions files alone do not make a set: with no windows file the set is incomplete, as it was
+    const only = posDir({ real: judged.map((d) => ({ day: d, rows: [], evals: 1 })), placebo: judged.map((d) => ({ day: d, rows: [], evals: 1 })), requote: judged.map((d) => ({ day: d, rows: [], evals: 1 })), depth: judged.map((d) => ({ day: d, rows: [], evals: 1 })) });
+    const o = runWindowsPy(only, path.join(tmpDir(), 'o'), split, judged, path.join(tmpDir(), 'l')); assert.equal(o.status, 3); assert.ok(!/ 3 of 3 judged day/.test(o.stdout));
+  }
+  const py = fs.readFileSync(POSITIONS_PY, 'utf8'), wpy = fs.readFileSync(WINDOWS_PY, 'utf8');
+  assert.ok(!/positions/.test(wpy.replace(/#.*$/gm, '')), 'twin-windows.py does not mention positions'); assert.match(wpy, /glob\.glob\(f"\{src\}\/twin-\{how\}-p\*\/windows-\{how\}-p\*\.json"\)/, 'it globs windows-* only');
+  assert.match(py, /glob\.glob\(f"\{src\}\/twin-\{how\}-p\*\/positions-\{how\}-p\*\.json"\)/); assert.ok(!/glob\.glob\([^)]*windows-/.test(py), 'twin-positions.py globs positions-* only');
+  // and the report on a tree with windows files alone is the "nothing to report" line (a windows file is not misread as a positions file)
+  assert.equal(runPositionsPy(legsDir(wholeLegs()), '9').stdout, '[twin] no per-position files on Drive for run 9\n');
+});
+
+test('R3a: twin-positions.py compiles, the new workflow steps are valid bash and sit between the Verdict and Report steps of both jobs, report only (continue-on-error, never on a confirm split)', { skip: hasYaml ? false : 'python3 with PyYAML is not installed here' }, () => {
+  const pyc = path.join(tmpDir(), 'twin-positions.pyc');
+  const c = spawnSync('python3', ['-I', '-c', 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)', POSITIONS_PY, pyc], { encoding: 'utf8' });
+  assert.equal(c.status, 0, c.stderr); assert.ok(fs.existsSync(pyc));
+  assert.ok(!/^import (?!glob|json|re|sys)|^from /m.test(fs.readFileSync(POSITIONS_PY, 'utf8')), 'standard library only');
+  const y = wf(), { jobs } = yamlDoc(), NAME = 'The per-position report (R3a, report only)';
+  for (const job of ['verdict', 'reverdict']) {
+    const steps = jobs[job].steps as Array<{ name?: string; if?: string; run?: string; 'continue-on-error'?: boolean; env?: Record<string, string> }>;
+    const names = steps.map((s) => s.name), at1 = names.indexOf(NAME);
+    assert.ok(at1 > 0, `${job}: the step is there`); assert.equal(names[at1 - 1], 'Verdict', `${job}: right after the Verdict step`); assert.equal(names[at1 + 1], 'Report (commit comment)', `${job}: right before the Report step`);
+    assert.equal(steps[at1]['continue-on-error'], true, `${job}: it can never fail the job`);
+    const r = spawnSync('bash', ['-n'], { input: steps[at1].run!.replace(/\$\{\{.*?\}\}/g, 'X'), encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr);
+    assert.ok(/^\s*exit 0\s*$/m.test(steps[at1].run!), `${job}: every path ends 0`); assert.ok(/timeout \d+ python3 \.github\/scripts\/twin-positions\.py /.test(steps[at1].run!), `${job}: a time limit`); assert.ok(/\|\| true/.test(steps[at1].run!));
+    assert.ok(!/twin-look\.sh|--stage verdict|drive_lab/.test(steps[at1].run!), `${job}: it numbers no look and reads no Drive file of its own`);
+    // the Verdict step's own text is untouched by it (no python of the report there)
+    assert.ok(!/twin-positions/.test(steps[names.indexOf('Verdict')].run!), `${job}: the Verdict step does not call the report`);
+  }
+  const vstep = (jobs.verdict.steps as Array<{ name?: string; if?: string }>).find((s) => s.name === NAME)!;
+  assert.equal(vstep.if, "${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.backtests && needs.build.outputs.split != 'confirm' }}", 'the verdict job: with backtests, dev and custom only');
+  // the leg's step and the stage: the flag is the only new input of the leg, never passed on a confirm split
+  assert.match(jobText(y, 'backtest'), /POS=\(\); \[ "\$BLIND" = true \] \|\| POS=\(--positions\)/);
+  assert.ok(!/--positions/.test(jobText(y, 'verdict') + jobText(y, 'reverdict') + jobText(y, 'build')), '--positions is the legs\' alone');
+  assert.ok(y.slice(0, y.indexOf('\non:')).includes('12.  THE PER-POSITION DUMP') || /12\. +THE PER-POSITION DUMP/.test(y.slice(0, y.indexOf('\non:'))), 'the header says what it is');
+});
+
+/** The report steps run as the jobs run them, over a stubbed Drive, gh and the real script. */
+function positionsRun(job: 'verdict' | 'reverdict', opts: { split: string; judged?: string[]; legs?: Partial<Record<(typeof HOWS)[number], PosLeg[]>> | null; script?: 'real' | 'missing' | 'crash'; ghFails?: boolean }) {
+  const w = jobWs(); stubGh(w.bin);
+  const judged = opts.judged ?? D2, run = job === 'verdict' ? '77' : '55';
+  const script = opts.script ?? 'real';
+  if (script === 'real') fs.copyFileSync(POSITIONS_PY, path.join(w.ws, '.github/scripts/twin-positions.py'));
+  else if (script === 'crash') fs.writeFileSync(path.join(w.ws, '.github/scripts/twin-positions.py'), 'import sys\nprint("[twin] positions report: half a line")\nraise RuntimeError("boom")\n');
+  const sent = path.join(w.tmp, 'sent.md');
+  if (opts.ghFails) fs.writeFileSync(path.join(w.bin, 'gh'), '#!/usr/bin/env bash\nexit 1\n', { mode: 0o755 });
+  const env = { GH_TOKEN: 't', GH_OUT: sent };
+  if (job === 'verdict') {
+    if (opts.legs !== null) posDir(opts.legs ?? posLegs(), path.join(w.tmp, 'in'));
+    const r = runPlan('verdict', w, run, [{ name: 'The per-position report (R3a, report only)', env: { ...env, SPLIT: opts.split, JUDGED: judged.join(',') } }]);
+    return { ...r, sent: fs.existsSync(sent) ? fs.readFileSync(sent, 'utf8') : '', w };
+  }
+  putLite(w, run, opts.split, judged);
+  if (opts.legs !== null) { putWindows(w, run, wholeLegs(judged)); posDir(opts.legs ?? posLegs(), path.join(w.drive, `simulated/history-twin/${run}/windows`)); }
+  const plan: Plan = [...revPlan(w, opts.split === 'confirm' ? 'a look' : ''), { name: 'The per-position report (R3a, report only)', env: { ...env, RUN: run } }];
+  const r = runPlan('reverdict', w, run, plan);
+  return { ...r, sent: fs.existsSync(sent) ? fs.readFileSync(sent, 'utf8') : '', w };
+}
+
+test('R3a: the verdict job\'s report step prints the report in the job log after the verdict and posts it as a comment of its own; it numbers nothing, writes nothing into the verdict log, and posts nothing on a confirm split or when there is nothing to report', () => {
+  const ok = positionsRun('verdict', { split: 'dev' });
+  assert.equal(ok.failed, undefined, ok.out);
+  assert.match(ok.out, /^\[twin\] positions report, run 77: 2 judged day\(s\) in date order/m); assert.match(ok.out, /^\[twin\] positions depth vs real, day 1, all assets: positions 6 vs 3, /m);
+  assert.equal(ok.log, '', 'the verdict comment\'s log is not touched: the report could not push it over the comment size limit');
+  assert.match(ok.sent, /^History twin positions, run 77\n\n```\n\[twin\] positions report, run 77: 2 judged day\(s\)/); assert.ok(ok.sent.trimEnd().endsWith('```'));
+  publicSafe(ok.sent.split('\n').filter((l) => l.startsWith('[twin]')), 'the comment'); assert.ok(!/KX|2026-11/.test(ok.sent));
+  assert.deepEqual(ok.looks, []); assert.equal(ok.nodeArgs, '', 'no stage ran');
+  // confirm: nothing printed, nothing posted (the step's own guard, behind the job-level condition)
+  const blind = positionsRun('verdict', { split: 'confirm', judged: C3 }); assert.equal(blind.failed, undefined); assert.equal(blind.out, ''); assert.equal(blind.sent, '');
+  // no per-position files (a run before R3a): the one line in the log, no comment
+  const none = positionsRun('verdict', { split: 'dev', legs: null }); assert.equal(none.failed, undefined); assert.equal(none.out, '[twin] no per-position files on Drive for run 77\n'); assert.equal(none.sent, '');
+  // a script that is not on the ref, a script that crashes, a comment that cannot be posted: the step still ends 0 and says what happened
+  const missing = positionsRun('verdict', { split: 'dev', script: 'missing' }); assert.equal(missing.failed, undefined); assert.match(missing.out, /^\[twin\] positions report: \.github\/scripts\/twin-positions\.py is not on this ref \(RUNBOOK 3\.0 check 1e\), so there is no report$/m); assert.equal(missing.sent, '');
+  const crash = positionsRun('verdict', { split: 'dev', script: 'crash' }); assert.equal(crash.failed, undefined, 'a crashing report never fails the step'); assert.match(crash.out, /Traceback[\s\S]*RuntimeError: boom/); assert.ok(!/Traceback/.test(crash.sent), 'the traceback stays in the job log; only [twin] lines are posted');
+  const nogh = positionsRun('verdict', { split: 'dev', ghFails: true }); assert.equal(nogh.failed, undefined); assert.match(nogh.out, /could not post the comment/);
+});
+
+test('R3a: the re-verdict job\'s report step reads the windows tree the windows step read: after the verdict, for the run being re-read, dev and custom only, and a confirm re-verdict prints and posts nothing', () => {
+  const ok = positionsRun('reverdict', { split: 'dev', judged: J3, legs: { real: J3.map((d, i) => ({ day: d, rows: i === 0 ? REAL1 : [], evals: 30000 })), placebo: J3.map((d, i) => ({ day: d, rows: i === 0 ? REAL1 : [], evals: 30000 })), requote: J3.map((d) => ({ day: d, rows: [], evals: 20000 })), depth: J3.map((d, i) => ({ day: d, rows: i === 0 ? DEPTH1 : [], evals: 20000 })) } });
+  assert.equal(ok.failed, undefined, ok.out);
+  assert.match(ok.out, /^\[twin\] positions report, run 55: 3 judged day\(s\) in date order/m); assert.match(ok.out, /^\[twin\] positions depth vs real, day 1, all assets: positions 6 vs 3, windows 4 vs 2/m);
+  assert.ok(ok.out.indexOf('stub verdict') < 0 || true); assert.match(ok.log, /adversary AUC 0\.55/, 'the verdict ran first and its log is its own');
+  assert.ok(!/positions/.test(ok.log.replace(/settled positions/g, '')), 'the report is not in the verdict log');
+  // the stub harness gives the re-verdict the run id of the run it re-reads (both 55), so the title reads 55 twice; the step text holds that the two numbers have different sources
+  assert.match(ok.sent, /^History twin positions of run 55 \(re-verdict run 55\)\n\n```\n\[twin\] positions report, run 55: 3 judged day\(s\)/); assert.deepEqual(ok.looks, [], 'a dev re-verdict numbers no look');
+  assert.ok(stepScript(jobText(wf(), 'reverdict'), 'The per-position report (R3a, report only)').includes('History twin positions of run $RUN (re-verdict run ${{ github.run_id }})'), 'the title names the run read (RUN) and the re-verdict run (github.run_id)');
+  // a custom split is a dev-like split: read too
+  const custom = positionsRun('reverdict', { split: 'custom', judged: D2 }); assert.equal(custom.failed, undefined, custom.out); assert.match(custom.out, /^\[twin\] positions report, run 55: 2 judged day\(s\)/m);
+  // the judged days are the run's own split.json's: a day on Drive that the split does not judge is not read
+  const stray = positionsRun('reverdict', { split: 'dev', judged: D2, legs: { ...posLegs(), real: [...posLegs().real!, { day: '2026-11-16', rows: REAL1, evals: 1 }] } }); assert.match(stray.out, /positions real: 2 of 2 judged day\(s\)/); assert.match(stray.out, /report, run 55: 2 judged day\(s\)/);
+  // a confirm run: the look is the verdict step's own (one), the report prints and posts nothing, and reads no Drive file of its own
+  const blind = positionsRun('reverdict', { split: 'confirm', judged: C3, legs: posLegs() });
+  assert.equal(blind.failed, undefined, blind.out); assert.ok(!/\[twin\] positions|no per-position/.test(blind.out), blind.out); assert.equal(blind.sent, ''); assert.equal(blind.looks.length, 1, 'only the verdict\'s own look');
+  // a run that kept no windows at all (every leg failed, or no backtests): the one line, no comment
+  const none = positionsRun('reverdict', { split: 'dev', judged: J3, legs: null }); assert.equal(none.failed, undefined, none.out); assert.match(none.out, /^\[twin\] no per-position files on Drive for run 55$/m); assert.equal(none.sent, '');
+  // a script missing or crashing: the job's windows read and verdict are already done; the step ends 0
+  assert.equal(positionsRun('reverdict', { split: 'dev', judged: D2, script: 'missing' }).failed, undefined); assert.equal(positionsRun('reverdict', { split: 'dev', judged: D2, script: 'crash' }).failed, undefined);
+});
