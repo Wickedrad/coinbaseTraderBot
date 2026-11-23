@@ -63,6 +63,14 @@
 #      whose stamp is not this ref's, or has none, is refused (calibration-check). It fits to the real FIT lives whose contract the requote FIT day
 #      has (the judge's population; the stage prints `real FIT lives kept a of b`). The real FIT rows are kept beside the judged real side
 #      (real-fit-features.json, under real-meta.json's key; every contract, unrestricted); real_features_run refuses a run that lacks them or has other fit days.
+#  11. THE VERDICT NEVER NEEDS THE BIG CACHE (round S2). The build keeps two caches: the small judged files (history-twin-lite-RUN, 518 KB) and, with
+#      backtests, data/twin + data/models (history-twin-RUN, 9 GB), which only the backtest legs restore (with a Drive fallback). GitHub's repository
+#      cache limit is 10 GB and it evicts the least recently used entries, so a 9 GB cache can be gone within the hour: P2b's verdict job failed on
+#      that miss 12 minutes after its legs finished, and a 3.4-hour run gave no verdict. The verdict and re-verdict jobs read only the lite cache
+#      (a miss is not a failure: Drive simulated/history-twin/RUN/twinlite has the same files; neither = one '[twin] ERROR' line before anything is read)
+#      and the legs' per-window P&L from Drive (.github/scripts/twin-windows.py assembles it, for both jobs). A re-verdict of a run with backtests
+#      re-reads checks 2-4 from Drive when the legs' windows are whole there (reverdict_run=RUN); an incomplete set is not used (check 1 only).
+#      A confirm look is numbered by the build job (the verdict job only prints it) or, for a re-verdict, by its Verdict step AFTER every step that reads data.
 # The older routes (a Replay fidelity run's cached copy, a server copy slot) are gone from this file; commit 3be29e0 has them.
 #
 # No server access at all. This repository is public: jobs print counts, cents, $ and AUCs only; recordings never go to
@@ -1074,28 +1082,42 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
+      # The verdict reads ONLY the small judged files of this run (the lite cache, else Drive: simulated/history-twin/RUN/twinlite) and, with
+      # backtests, the legs' per-window P&L (Drive). It never restores the build's big cache (data/twin + data/models, 9 GB): GitHub's
+      # repository cache limit is 10 GB and it evicts the least recently used entries, so P2b's verdict (run 45152244309) found nothing
+      # 12 minutes after its legs had restored that cache, and a finished 3.4-hour run gave no verdict. No step of this job may fail on a
+      # miss of a cache. The confirm look was numbered by the build job (twin-look.sh runs nowhere in this job: it only prints it), so
+      # whatever fails here must fail BEFORE anything is read or printed, and the data the verdict needs is in place before the Verdict step.
       - uses: actions/cache/restore@v4
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.backtests }}
-        with:
-          path: |
-            data/twin
-          key: history-twin-${{ github.run_id }}
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v4
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.backtests) }}
         with:
           path: data/twinlite
           key: history-twin-lite-${{ github.run_id }}
-          fail-on-cache-miss: true
-      - name: The judged features in place
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.backtests) }}
-        run: mkdir -p data/twin && cp data/twinlite/* data/twin/
-      # The backtest legs' per-window P&L, from Drive (they are not artifacts: this repository is public).
-      - name: Drive setup (the backtest legs' per-window P&L)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.backtests }}
+      - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The judged features from Drive (the cache was evicted)
+        if: hashFiles('data/twinlite/paired.json') == ''
+        env:
+          RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "the run id is not a number"
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/twinlite || rc=$?
+          [ "$rc" -eq 0 ] || twin_fail "run $RUN's judged features are neither in the lite cache nor readable on Drive (simulated/history-twin/$RUN/twinlite; drive_lab.sh get exit $rc, 3 = nothing there): nothing was read and no verdict is made"
+          echo "[twin] the judged features of run $RUN were read from Drive (the lite cache is gone)" | tee -a "$TWIN_LOG"
+      - name: The judged features in place
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          MISS=""; for f in paired.json features-real.json; do [ -s "data/twinlite/$f" ] || MISS="$MISS $f"; done
+          [ -z "$MISS" ] || twin_fail "the judged features of run ${{ github.run_id }} are not whole (missing:$MISS): nothing was read and no verdict is made"
+          mkdir -p data/twin && cp data/twinlite/* data/twin/
+          rm -f data/twin/windows-*.json
+      # The backtest legs' per-window P&L, from Drive (they are not artifacts: this repository is public).
       - name: The per-window P&L from Drive
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.backtests }}
         run: |
@@ -1128,21 +1150,12 @@ jobs:
           VERDICT_T0=$(date +%s)
           if [ "$BACKTESTS" = true ]; then
             rc=0
-            python3 - "$RUNNER_TEMP/in" data/twin "$SPLIT" "$JUDGED" "$RUNNER_TEMP/legs.txt" <<'PY' | tee -a "$TWIN_LOG" || rc=$?
-          import glob, json, re, sys
-          src, out, split, judged, legs = sys.argv[1:]
-          want = {d for d in judged.split(",") if d}
-          got = []
-          for how in ("real", "placebo", "requote", "depth"):
-              files = sorted(glob.glob(f"{src}/twin-{how}-p*/windows-{how}-p*.json"))
-              days = {m.group(1) for m in (re.search(r"(\d{4}-\d\d-\d\d)\.json$", f) for f in files) if m} & want
-              w = [x for f in files for x in json.load(open(f))]
-              if files: json.dump(w, open(f"{out}/windows-{how}.json", "w"))
-              print(f"[twin] backtest legs {how}: {len(days)} of {len(want)} judged day(s) have a per-window file" + ("" if split == "confirm" else f", {len(w)} window(s)"))
-              got.append(len(days))
-          open(legs, "w").write("/".join(str(g) for g in got) + " of " + str(len(want)))
-          sys.exit(0 if want and all(g == len(want) for g in got) else 3)
-          PY
+            python3 .github/scripts/twin-windows.py "$RUNNER_TEMP/in" data/twin "$SPLIT" "$JUDGED" "$RUNNER_TEMP/legs.txt" | tee -a "$TWIN_LOG" || rc=$?
+            # exit 3 = the legs' files are incomplete; any other non-zero exit = the script itself did not run to its end (2 = bad arguments or the file is not
+            # on this ref, 1 = it crashed, 127 = no python3): its own message, so a reader does not look for a lost leg that is not lost
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+              twin_fail "twin-windows.py failed (exit $rc; 2 = bad arguments or the file is not on this ref, see RUNBOOK 3.0 check 1d): the legs' per-window P&L was not assembled and no PASS/FAIL is printed. Fix the cause, then re-verdict this run (reverdict_run): nothing needs rebuilding"
+            fi
             if [ "$BT_RESULT" != success ] || [ "$rc" -ne 0 ]; then
               twin_fail "backtest legs incomplete (backtest jobs: $BT_RESULT; per-window day files real/placebo/requote/depth = $(cat "$RUNNER_TEMP/legs.txt" 2>/dev/null || echo '?')): checks 2-4 are not valid and no PASS/FAIL is printed. Re-dispatch once (the same failure twice: stop and write a note); check 1 alone is readable by a re-verdict of this run (reverdict_run)"
             fi
@@ -1197,6 +1210,9 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
+      # The judged files of the run (lite cache, else Drive), then the legs' per-window P&L (Drive; a run without backtests has none), and ONLY THEN the
+      # Verdict step, which is where a confirm look is numbered (twin-look.sh): every step that can fail for want of data comes before it, so a failure
+      # for want of data never burns a blind look. A miss of the cache is not a failure (Drive has the files); neither of them is: one failing line, before anything is read.
       - uses: actions/cache/restore@v4
         with:
           path: data/twinlite
@@ -1210,11 +1226,64 @@ jobs:
         env:
           RUN: ${{ inputs.reverdict_run }}
         run: |
+          set -euo pipefail
           source .github/scripts/twin-lib.sh
           export TWIN_LOG="$RUNNER_TEMP/verdict.log"
           [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "reverdict_run must be a run id"
-          bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/twinlite || twin_fail "run $RUN's features are neither cached nor on Drive"
-      # Reading a confirm run's rows again is another look: it needs a note and is numbered and logged like the first.
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/twinlite || rc=$?
+          [ "$rc" -eq 0 ] || twin_fail "run $RUN's features are neither cached nor on Drive (simulated/history-twin/$RUN/twinlite; drive_lab.sh get exit $rc, 3 = nothing there): nothing was read and no look was numbered"
+      - name: The judged features in place
+        env:
+          RUN: ${{ inputs.reverdict_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "reverdict_run must be a run id"
+          MISS=""; for f in paired.json features-real.json; do [ -s "data/twinlite/$f" ] || MISS="$MISS $f"; done
+          [ -z "$MISS" ] || twin_fail "the judged features of run $RUN are not whole (missing:$MISS): nothing was read and no look was numbered"
+          mkdir -p data/twin && cp data/twinlite/* data/twin/
+          rm -f data/twin/windows-*.json
+      # Checks 2-4 again, from the legs' per-window P&L that THIS run's backtest legs kept on Drive. A run without backtests (or a fast one) has none: rclone
+      # exit 3 is not a failure, checks 2-4 are simply not re-read and the verdict is check 1 as before. The days are the judged days of the run's own split.json
+      # (never an input, never another run's), the assembly and its completeness guard are the verdict job's own script, and an INCOMPLETE set copies nothing
+      # (outcome() counts a missing window as P&L 0 and a lost part would read as a simulator defect). On a confirm split only day-file counts print.
+      - name: The legs' per-window P&L from Drive (checks 2-4, when the run kept them)
+        env:
+          RUN: ${{ inputs.reverdict_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "reverdict_run must be a run id"
+          mkdir -p "$RUNNER_TEMP/in"
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/windows" "$RUNNER_TEMP/in" || rc=$?
+          if [ "$rc" -eq 3 ]; then
+            echo "[twin] no per-window P&L on Drive for run $RUN: checks 2-4 are not re-read" | tee -a "$TWIN_LOG"
+            exit 0
+          fi
+          [ "$rc" -eq 0 ] || twin_fail "reading the per-window P&L of run $RUN from Drive failed (rclone exit $rc): nothing was read and no look was numbered"
+          if [ ! -s data/twin/split.json ]; then
+            echo "[twin] WARNING: run $RUN's judged files have no split.json, so its judged days are not known: checks 2-4 are not re-read" | tee -a "$TWIN_LOG"
+            exit 0
+          fi
+          SPLIT=$(python3 -c "import json; print(json.load(open('data/twin/split.json'))['name'])") || twin_fail "run $RUN's split.json has no name: nothing was read and no look was numbered"
+          JUDGED=$(python3 -c "import json; print(','.join(json.load(open('data/twin/split.json'))['judge']))") || twin_fail "run $RUN's split.json has no judge list: nothing was read and no look was numbered"
+          # twin-windows.py's exit code: 0 = whole, 3 = incomplete (the ONLY case that degrades to check 1), anything else = the script did not run to its end
+          # (2 = bad arguments or the file is not on this ref, 1 = it crashed, 127 = no python3): that says nothing about the legs' files, so it fails here,
+          # before the Verdict step, and a confirm look is not numbered. The look would otherwise be spent on a verdict that reads check 1 only by accident.
+          rc=0
+          python3 .github/scripts/twin-windows.py "$RUNNER_TEMP/in" "$RUNNER_TEMP/win" "$SPLIT" "$JUDGED" "$RUNNER_TEMP/legs.txt" | tee -a "$TWIN_LOG" || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            cp "$RUNNER_TEMP"/win/windows-*.json data/twin/
+            echo "[twin] the per-window P&L on Drive for run $RUN is whole: checks 2-4 are re-read" | tee -a "$TWIN_LOG"
+          elif [ "$rc" -eq 3 ]; then
+            echo "[twin] WARNING: the per-window P&L on Drive for run $RUN is incomplete (real/placebo/requote/depth = $(cat "$RUNNER_TEMP/legs.txt" 2>/dev/null || echo '?') judged day(s)): checks 2-4 are not re-read" | tee -a "$TWIN_LOG"
+          else
+            twin_fail "twin-windows.py failed (exit $rc; 2 = bad arguments or the file is not on this ref, see RUNBOOK 3.0 check 1d): the legs' per-window P&L of run $RUN was not assembled, nothing was read and no look was numbered"
+          fi
+      # Reading a confirm run's rows again is another look: it needs a note and is numbered and logged like the first. Everything the verdict needs is in place
+      # above; the numbering is the first thing this step does after it has the split's name.
       - name: Verdict
         env:
           LOOK_NOTE: ${{ inputs.confirm_look_note }}
@@ -1222,7 +1291,6 @@ jobs:
           set -euo pipefail
           source .github/scripts/twin-lib.sh
           export TWIN_LOG="$RUNNER_TEMP/verdict.log"
-          mkdir -p data/twin && cp data/twinlite/* data/twin/
           SPLIT=$(python3 -c "import json; print(json.load(open('data/twin/split.json'))['name'])" 2>/dev/null || echo custom)
           LOOK=()
           if [ "$SPLIT" = confirm ]; then
@@ -1232,7 +1300,7 @@ jobs:
             N=$(bash .github/scripts/twin-look.sh "$LOOK_NOTE")
             LOOK=(--confirm-look "$N" --confirm-look-note "$LOOK_NOTE")
           fi
-          node --import tsx research/historyTwin.ts --stage verdict --out data/twin "${LOOK[@]}" 2>&1 | tee "$RUNNER_TEMP/verdict.log" | grep -E '^\[twin\]|Error'
+          node --import tsx research/historyTwin.ts --stage verdict --out data/twin "${LOOK[@]}" 2>&1 | tee -a "$RUNNER_TEMP/verdict.log" | grep -E '^\[twin\]|Error'
       - name: Report (commit comment)
         if: always()
         env:

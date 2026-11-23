@@ -844,6 +844,7 @@ function stepWs(): { ws: string; bin: string; tmp: string } {
   const work = tmpDir(), ws = path.join(work, 'ws'), bin = path.join(work, 'bin'), tmp = path.join(work, 'tmp');
   for (const d of [bin, tmp, path.join(ws, '.github/scripts'), path.join(ws, 'deploy'), path.join(ws, 'data/twin')]) fs.mkdirSync(d, { recursive: true });
   fs.copyFileSync(path.join(ROOT, '.github/scripts/twin-lib.sh'), path.join(ws, '.github/scripts/twin-lib.sh'));
+  fs.copyFileSync(path.join(ROOT, '.github/scripts/twin-windows.py'), path.join(ws, '.github/scripts/twin-windows.py')); // S2: the verdict job's windows assembly is a script file now
   return { ws, bin, tmp };
 }
 const expr = (script: string, v: Record<string, string> = {}) => script
@@ -3315,3 +3316,407 @@ test('the commit comment\'s framing pattern is pinned literally, timing lines in
   for (const l of ['[twin] 2026-11-13: contracts real 5 / twin 4', '[twin] real 2026-11-13: 12 lives, trades/min 1.00', '[twin] features real: 12 contract lives over 2 day(s)', '[twin] match from 12:00 UTC', '[twin] depth fill-in written for 7 day(s)']) assert.ok(!re.test(l), l);
 });
 // ---- S1 end of the match and features tests ----
+
+// ---------------------------------------------------------------------------------------------------------------
+// ---- S2: the verdict never depends on the 9 GB cache; a re-verdict re-reads checks 2-4 from Drive ----
+// P2b (run 45152244309): the verdict job failed in 10 s at `actions/cache/restore@v4` ("Failed to restore cache entry", fail-on-cache-miss) because GitHub's
+// 10 GB repository limit had evicted the build's 9 GB cache 12 minutes after the legs restored it. The verdict reads only the lite cache or Drive now, the
+// re-verdict also reads the legs' per-window P&L from Drive, and one script (.github/scripts/twin-windows.py) assembles it for both. These tests are
+// synthetic: stubbed Drive, node and gh, the workflow's own steps run as text.
+
+const WINDOWS_PY = path.join(ROOT, '.github/scripts/twin-windows.py');
+const HOWS = ['real', 'placebo', 'requote', 'depth'] as const;
+const J3 = ['2026-11-13', '2026-11-14', '2026-11-16'];
+const C3 = ['2026-11-18', '2026-11-19', '2026-11-20'];
+/** What the verdict job's inline python was at fcdea68, character for character (the heredoc of its Verdict step): the reference the script's printed lines, legs file and files are held to. */
+const OLD_INLINE = `import glob, json, re, sys
+src, out, split, judged, legs = sys.argv[1:]
+want = {d for d in judged.split(",") if d}
+got = []
+for how in ("real", "placebo", "requote", "depth"):
+    files = sorted(glob.glob(f"{src}/twin-{how}-p*/windows-{how}-p*.json"))
+    days = {m.group(1) for m in (re.search(r"(\\d{4}-\\d\\d-\\d\\d)\\.json$", f) for f in files) if m} & want
+    w = [x for f in files for x in json.load(open(f))]
+    if files: json.dump(w, open(f"{out}/windows-{how}.json", "w"))
+    print(f"[twin] backtest legs {how}: {len(days)} of {len(want)} judged day(s) have a per-window file" + ("" if split == "confirm" else f", {len(w)} window(s)"))
+    got.append(len(days))
+open(legs, "w").write("/".join(str(g) for g in got) + " of " + str(len(want)))
+sys.exit(0 if want and all(g == len(want) for g in got) else 3)
+`;
+/** The legs' folders as drive_lab.sh get leaves them: twin-HOW-pI/windows-HOW-pI-DAY.json, one file per judged day. */
+function legsDir(have: Partial<Record<(typeof HOWS)[number], string[]>>, dir = tmpDir()): string {
+  for (const [how, days] of Object.entries(have)) days!.forEach((d, i) => {
+    const sub = path.join(dir, `twin-${how}-p${i}`); fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, `windows-${how}-p${i}-${d}.json`), JSON.stringify([[`${how}${i}a`, 1.5], [`${how}${i}b`, -2]]));
+  });
+  return dir;
+}
+const wholeLegs = (days = J3) => ({ real: days, placebo: days, requote: days, depth: days });
+const winFiles = (dir: string) => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^windows-.*\.json$/.test(f)).sort() : []);
+const runWindowsPy = (src: string, out: string, split: string, judged: string[], legs: string) => spawnSync('python3', ['-I', WINDOWS_PY, src, out, split, judged.join(','), legs], { encoding: 'utf8' });
+const runOldInline = (src: string, out: string, split: string, judged: string[], legs: string) => { fs.mkdirSync(out, { recursive: true }); return spawnSync('python3', ['-I', '-', src, out, split, judged.join(','), legs], { input: OLD_INLINE, encoding: 'utf8' }); };
+
+test('twin-windows.py: a whole set writes the four windows files and exits 0, and its lines, its legs file and its files are the old inline python\'s, byte for byte', () => {
+  for (const [split, judged] of [['dev', J3], ['custom', J3], ['confirm', C3]] as Array<[string, string[]]>) {
+    const src = legsDir(wholeLegs(judged)), a = path.join(tmpDir(), 'new'), b = path.join(tmpDir(), 'old'), la = path.join(tmpDir(), 'legs.txt'), lb = path.join(tmpDir(), 'legs.txt');
+    const n = runWindowsPy(src, a, split, judged, la), o = runOldInline(src, b, split, judged, lb);
+    assert.equal(n.status, 0, n.stderr); assert.equal(o.status, 0, o.stderr);
+    assert.equal(n.stdout, o.stdout, `the printed lines of the ${split} split are unchanged`);
+    assert.equal(fs.readFileSync(la, 'utf8'), '3/3/3/3 of 3'); assert.equal(fs.readFileSync(la, 'utf8'), fs.readFileSync(lb, 'utf8'));
+    assert.deepEqual(winFiles(a), ['windows-depth.json', 'windows-placebo.json', 'windows-real.json', 'windows-requote.json']);
+    for (const how of HOWS) assert.equal(fs.readFileSync(path.join(a, `windows-${how}.json`), 'utf8'), fs.readFileSync(path.join(b, `windows-${how}.json`), 'utf8'), `windows-${how}.json is the old file`);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(a, 'windows-depth.json'), 'utf8')).length, 6, '2 windows a day, 3 days');
+    if (split === 'confirm') assert.ok(!/window\(s\)/.test(n.stdout), `a confirm split prints day-file counts only: ${n.stdout}`);
+    else for (const how of HOWS) assert.ok(n.stdout.includes(`[twin] backtest legs ${how}: 3 of 3 judged day(s) have a per-window file, 6 window(s)\n`), n.stdout);
+  }
+  assert.ok(runWindowsPy(legsDir(wholeLegs(C3)), path.join(tmpDir(), 'o'), 'confirm', C3, path.join(tmpDir(), 'l')).stdout.endsWith('3 of 3 judged day(s) have a per-window file\n'), 'the confirm line, exactly');
+});
+
+test('twin-windows.py: a missing source, a missing day, an empty judged list, a corrupt file, an unjudged day: exit 3, the lines say which, and NOTHING is written to the output folder', () => {
+  const none = path.join(tmpDir(), 'none');
+  const cases: Array<{ what: string; have: Partial<Record<(typeof HOWS)[number], string[]>>; judged?: string[]; want: string; legs: string }> = [
+    { what: 'a lost twin source', have: { ...wholeLegs(), depth: [] }, want: 'depth: 0 of 3', legs: '3/3/3/0 of 3' },
+    { what: 'a source that has no folder at all', have: { real: J3, placebo: J3, requote: J3 }, want: 'depth: 0 of 3', legs: '3/3/3/0 of 3' },
+    { what: 'a lost placebo day', have: { ...wholeLegs(), placebo: J3.slice(0, 2) }, want: 'placebo: 2 of 3', legs: '3/2/3/3 of 3' },
+    { what: 'nothing on Drive', have: {}, want: 'real: 0 of 3', legs: '0/0/0/0 of 3' },
+    { what: 'a day that is not judged does not stand in for a judged one', have: { ...wholeLegs(['2026-11-13', '2026-11-14']), real: ['2026-11-13', '2026-11-16'] }, judged: ['2026-11-13', '2026-11-14'], want: 'real: 1 of 2', legs: '1/2/2/2 of 2' },
+    { what: 'an empty judged list (no split.json judge list)', have: wholeLegs(), judged: [], want: 'real: 0 of 0', legs: '0/0/0/0 of 0' },
+  ];
+  for (const c of cases) {
+    const src = legsDir(c.have), out = path.join(tmpDir(), 'o'), legs = path.join(tmpDir(), 'legs.txt'), judged = c.judged ?? J3;
+    const r = runWindowsPy(src, out, 'dev', judged, legs);
+    assert.equal(r.status, 3, `${c.what}: ${r.stderr}`); assert.ok(r.stdout.includes(`[twin] backtest legs ${c.want} judged day(s) have a per-window file`), `${c.what}: ${r.stdout}`);
+    assert.equal(fs.readFileSync(legs, 'utf8'), c.legs, c.what);
+    assert.deepEqual(winFiles(out), [], `${c.what}: no windows file is written for an incomplete set (the old script wrote the sources that had files)`);
+    const o = runOldInline(src, path.join(tmpDir(), 'old'), 'dev', judged, path.join(tmpDir(), 'oldlegs.txt'));
+    assert.equal(o.status, 3, `${c.what}: the old script also refused it`);
+    if (!c.judged) assert.equal(r.stdout, o.stdout, `${c.what}: the lines are the old script's`);
+  }
+  assert.ok(!fs.existsSync(none));
+  // a file that is not valid JSON, or not a list, is a day with no file (the old script crashed with a traceback and exit 1)
+  const bad = legsDir(wholeLegs());
+  fs.writeFileSync(path.join(bad, 'twin-real-p1', 'windows-real-p1-2026-11-14.json'), '{"truncated"');
+  fs.writeFileSync(path.join(bad, 'twin-depth-p2', 'windows-depth-p2-2026-11-16.json'), '{"a": 1}');
+  const r = runWindowsPy(bad, path.join(tmpDir(), 'o'), 'confirm', J3, path.join(tmpDir(), 'legs.txt'));
+  assert.equal(r.status, 3); assert.ok(!/Traceback/.test(r.stderr), r.stderr); assert.match(r.stdout, /legs real: 2 of 3 judged day\(s\) have a per-window file\n/); assert.match(r.stdout, /legs depth: 2 of 3 judged day\(s\) have a per-window file\n/);
+  // wrong arguments: exit 2, a usage line, nothing else
+  const usage = spawnSync('python3', ['-I', WINDOWS_PY, 'a', 'b'], { encoding: 'utf8' }); assert.equal(usage.status, 2); assert.match(usage.stderr, /usage: twin-windows\.py/);
+});
+
+test('twin-windows.py reads only the judged days: a file of another day is neither counted nor copied into the four files', () => {
+  const src = legsDir(wholeLegs(['2026-11-13', '2026-11-14']));
+  // the run's folder also holds a day outside the judged list (a stale or foreign file)
+  fs.writeFileSync(path.join(src, 'twin-real-p0', 'windows-real-p0-2026-11-16.json'), JSON.stringify([['stray', 99]]));
+  fs.writeFileSync(path.join(src, 'twin-real-p0', 'windows-real-p0-notaday.json'), JSON.stringify([['stray2', 99]]));
+  const out = path.join(tmpDir(), 'o'), r = runWindowsPy(src, out, 'dev', ['2026-11-13', '2026-11-14'], path.join(tmpDir(), 'l'));
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /legs real: 2 of 2 judged day\(s\) have a per-window file, 4 window\(s\)\n/);
+  const real = JSON.parse(fs.readFileSync(path.join(out, 'windows-real.json'), 'utf8')); assert.equal(real.length, 4); assert.ok(!JSON.stringify(real).includes('stray'));
+});
+
+test('twin-windows.py compiles (python3 py_compile), and so does every shell block of the two jobs that call it (bash -n)', () => {
+  const pyc = path.join(tmpDir(), 'twin-windows.pyc');
+  const c = spawnSync('python3', ['-I', '-c', 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)', WINDOWS_PY, pyc], { encoding: 'utf8' });
+  assert.equal(c.status, 0, c.stderr); assert.ok(fs.existsSync(pyc));
+  const y = wf();
+  for (const j of ['verdict', 'reverdict']) {
+    const blocks = allRunScripts(jobText(y, j)); assert.ok(blocks.length >= 5, `${j}: ${blocks.length} run blocks`);
+    for (const { at, script } of blocks) { const r = spawnSync('bash', ['-n'], { input: script.replace(/\$\{\{.*?\}\}/g, 'X'), encoding: 'utf8' }); assert.equal(r.status, 0, `${j}: run block at line ${at} of the job: ${r.stderr}`); }
+  }
+  // the inline python is gone: the verdict job reaches the script file, so does the re-verdict, and no copy of the glob is left in the workflow
+  assert.ok(!/python3 - "\$RUNNER_TEMP\/in"/.test(y) && !y.includes('glob.glob'), 'no inline copy of the assembly');
+  for (const j of ['verdict', 'reverdict']) assert.ok(jobText(y, j).includes('python3 .github/scripts/twin-windows.py "$RUNNER_TEMP/in" '), `${j} runs the script`);
+  assert.match(stepScript(jobText(y, 'verdict'), 'Verdict'), /python3 \.github\/scripts\/twin-windows\.py "\$RUNNER_TEMP\/in" data\/twin "\$SPLIT" "\$JUDGED" "\$RUNNER_TEMP\/legs\.txt" \| tee -a "\$TWIN_LOG" \|\| rc=\$\?/);
+});
+
+test('the verdict and re-verdict jobs read no big cache and fail on no cache miss: the lite cache or Drive, in both cases; the build still saves both caches; the legs still restore the big one with the Drive fallback', { skip: hasYaml ? false : 'python3 with PyYAML is not installed here' }, () => {
+  const y = wf(), { jobs } = yamlDoc();
+  type St = { name?: string; uses?: string; if?: string; with?: Record<string, string>; env?: Record<string, string>; run?: string; id?: string };
+  for (const [job, runKey] of [['verdict', '${{ github.run_id }}'], ['reverdict', '${{ inputs.reverdict_run }}']] as const) {
+    const steps = jobs[job].steps as St[], text = jobText(y, job).split('\n').filter((l) => !/^\s*#/.test(l)).join('\n'); // (the comments explain the defect and name the cache)
+    assert.ok(!/fail-on-cache-miss/.test(text), `${job}: no step fails on a cache miss`);
+    const restores = steps.filter((s) => /^actions\/cache\/restore@/.test(s.uses ?? ''));
+    assert.equal(restores.length, 1, `${job}: one cache restore`); assert.deepEqual(restores[0].with, { path: 'data/twinlite', key: `history-twin-lite-${runKey}` }); assert.equal(restores[0].if, undefined, `${job}: the lite restore runs in both cases`);
+    assert.ok(!text.includes('key: history-twin-${{ github.run_id }}') && !/data\/models/.test(text), `${job}: the build's big cache (data/twin + data/models) is not restored`);
+    const at = (re: RegExp) => { const i = steps.findIndex((s) => re.test(s.name ?? s.uses ?? '')); assert.ok(i >= 0, `${job}: step ${re}`); return i; };
+    const restore = at(/^actions\/cache\/restore@/), drive = at(/^Drive setup$/), fall = at(/^The judged features from Drive/), place = at(/^The judged features in place$/), verdict = at(/^Verdict$/), report = at(/^Report \(commit comment\)$/);
+    assert.ok(restore < drive && drive < fall && fall < place && place < verdict && verdict < report, `${job}: restore, Drive setup, Drive fallback, in place, ..., Verdict, Report`);
+    assert.equal(steps[drive].uses, './.github/actions/drive-setup'); assert.equal(steps[drive].if, undefined, `${job}: Drive setup runs with and without backtests`);
+    assert.equal(steps[fall].if, "hashFiles('data/twinlite/paired.json') == ''", `${job}: the Drive read only when the cache did not have the files`);
+    assert.match(steps[fall].run!, /drive_lab\.sh get "simulated\/history-twin\/\$RUN\/twinlite" data\/twinlite/); assert.match(steps[fall].run!, /twin_fail "[^"]*neither/);
+    assert.equal(steps[place].if, undefined, `${job}: the copy runs in both cases`); assert.match(steps[place].run!, /mkdir -p data\/twin && cp data\/twinlite\/\* data\/twin\//);
+    for (const i of [restore, drive, fall, place]) assert.ok(!/backtests/.test(steps[i].if ?? ''), `${job}: ${steps[i].name ?? steps[i].uses} does not depend on backtests`);
+    // the Report, the permissions, the limits and the job's own condition are what they were
+    assert.equal(steps[report].if, 'always()');
+  }
+  assert.equal(jobs.verdict['timeout-minutes'], 60); assert.deepEqual(jobs.verdict.permissions, { contents: 'write', actions: 'read' }); assert.deepEqual(jobs.verdict.needs, ['build', 'backtest']); assert.equal(jobs.verdict.if, "${{ !cancelled() && needs.build.result == 'success' }}"); assert.equal(jobs.verdict.environment, 'production');
+  assert.equal(jobs.reverdict['timeout-minutes'], 30); assert.deepEqual(jobs.reverdict.permissions, { contents: 'write', actions: 'read' }); assert.equal(jobs.reverdict.environment, 'production');
+  assert.equal(jobs.reverdict.if, "${{ github.event_name == 'workflow_dispatch' && inputs.prep_days == '' && inputs.reverdict_run != '' && inputs.sweep_gen == '' }}");
+  // the verdict job still reads the legs' windows from Drive, with backtests only, between the features and the Verdict step
+  const vs = jobs.verdict.steps as St[], win = vs.findIndex((s) => s.name === 'The per-window P&L from Drive');
+  assert.ok(win > vs.findIndex((s) => s.name === 'The judged features in place') && win < vs.findIndex((s) => s.name === 'Verdict'));
+  assert.equal(vs[win].if, "${{ github.event_name == 'workflow_dispatch' && inputs.backtests }}");
+  // the build job still saves both caches, the lite one always and the big one with backtests; the legs restore the big one and fall back to Drive when it is gone
+  const saves = (jobs.build.steps as St[]).filter((s) => /^actions\/cache\/save@/.test(s.uses ?? '') && /^history-twin-/.test(s.with?.key ?? ''));
+  assert.deepEqual(saves.map((s) => [s.with!.key, s.with!.path, s.if ?? null]), [
+    ['history-twin-lite-${{ github.run_id }}', 'data/twinlite', null],
+    ['history-twin-${{ github.run_id }}', 'data/twin\ndata/models\n', "${{ github.event_name == 'workflow_dispatch' && inputs.backtests }}"],
+  ]);
+  const legSteps = jobs.backtest.steps as St[], legRestore = legSteps.filter((s) => /^actions\/cache\/restore@/.test(s.uses ?? ''));
+  assert.deepEqual(legRestore.map((s) => s.with!.key), ['history-twin-${{ github.run_id }}']); assert.ok(!/fail-on-cache-miss/.test(jobText(y, 'backtest')), 'the legs never failed on a miss and still do not');
+  const fallback = legSteps.find((s) => /^The twin from Drive \(the cache was evicted\)/.test(s.name ?? ''))!; assert.equal(fallback.if, "hashFiles('data/models/model.json') == ''");
+  // the header says why
+  const head = y.slice(0, y.indexOf('\non:'));
+  for (const w of ['THE VERDICT NEVER NEEDS THE BIG CACHE', '10 GB', 'twin-windows.py', 'reverdict_run=RUN']) assert.ok(head.includes(w), `the header says: ${w}`);
+});
+
+test('a confirm look is numbered by the build job and only PRINTED by the verdict job; a re-verdict numbers it in its Verdict step, after every step that reads data', () => {
+  const y = wf();
+  assert.ok(!/twin-look\.sh/.test(jobText(y, 'verdict').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')), 'the verdict job numbers nothing: the look comes from the build job\'s output');
+  assert.match(stepScript(jobText(y, 'verdict'), 'Verdict'), /--confirm-look "\$LOOK_N"/); assert.match(jobText(y, 'verdict'), /LOOK_N: \$\{\{ needs\.build\.outputs\.look \}\}/);
+  assert.match(jobText(y, 'build'), /id: look/); assert.equal((jobText(y, 'build').match(/bash \.github\/scripts\/twin-look\.sh/g) ?? []).length, 1, 'one numbering call in the build job');
+  // the re-verdict: twin-look.sh is called in the Verdict step and nowhere else, and that step is the LAST one that is not the report
+  const re = jobText(y, 'reverdict'), lines = re.split('\n');
+  const calls = lines.map((l, i) => [l, i] as const).filter(([l]) => /bash \.github\/scripts\/twin-look\.sh/.test(l));
+  assert.equal(calls.length, 1, 'one numbering call in the re-verdict job');
+  const verdictAt = lines.findIndex((l) => l === '      - name: Verdict'), reportAt = lines.findIndex((l) => l === '      - name: Report (commit comment)');
+  assert.ok(calls[0][1] > verdictAt && calls[0][1] < reportAt, 'inside the Verdict step');
+  const before = lines.slice(0, verdictAt).join('\n');
+  for (const need of ['drive_lab.sh get "simulated/history-twin/$RUN/twinlite"', 'cp data/twinlite/* data/twin/', 'drive_lab.sh get "simulated/history-twin/$RUN/windows"', 'twin-windows.py', 'cp "$RUNNER_TEMP"/win/windows-*.json data/twin/']) assert.ok(before.includes(need), `before the Verdict step: ${need}`);
+  assert.ok(!/drive_lab\.sh|twin-windows\.py|cp data\/twinlite/.test(lines.slice(verdictAt, reportAt).join('\n')), 'the Verdict step reads no data of its own: it only numbers, runs the stage and prints');
+  // the lines of the earlier steps survive the stage's output (it appends)
+  assert.match(lines.slice(verdictAt, reportAt).join('\n'), /--out data\/twin "\$\{LOOK\[@\]\}" 2>&1 \| tee -a "\$RUNNER_TEMP\/verdict\.log" \|/);
+});
+
+// ---- the steps themselves, run in order with a stubbed Drive and node (a job stops at its first failed step) ----
+
+/** A fake drive_lab.sh over a folder: get and put copy whole folders; STUB_GET_FAIL=SUFFIX makes a get of a name ending in SUFFIX fail with rclone's exit 1; get leaves its folder made, exit 3 when Drive has nothing there. */
+const fakeLab = (ws: string) => fs.writeFileSync(path.join(ws, 'deploy/drive_lab.sh'), `#!/usr/bin/env bash
+echo "$*" >> "\${STUB_CALLS:-/dev/null}"
+case "$1" in
+  get) mkdir -p "$3"
+       if [ -n "\${STUB_GET_FAIL:-}" ]; then case "$2" in *"$STUB_GET_FAIL") exit 1;; esac; fi
+       [ -d "$STUB_DRIVE/$2" ] || exit 3; cp -r "$STUB_DRIVE/$2/." "$3/";;
+  put) mkdir -p "$STUB_DRIVE/$2"; cp -r "$3/." "$STUB_DRIVE/$2/";;
+esac
+`, { mode: 0o755 });
+function jobWs() {
+  const w = stepWs(); fakeLab(w.ws);
+  fs.copyFileSync(path.join(ROOT, '.github/scripts/twin-look.sh'), path.join(w.ws, '.github/scripts/twin-look.sh'));
+  fs.writeFileSync(path.join(w.bin, 'node'), `#!/usr/bin/env bash\necho "$*" > "${w.tmp}/node-args"\nmkdir -p data/twin; echo '{"paired":[]}' > data/twin/verdict.json\nls data/twin/windows-*.json 2>/dev/null | wc -l | sed 's/^ */[twin] stub verdict saw windows files: /'\necho "[twin] depth: adversary AUC 0.55"\n`, { mode: 0o755 });
+  return { ...w, drive: tmpDir(), calls: path.join(w.tmp, 'calls.txt') };
+}
+/** The run's judged files as the build keeps them (data/twinlite), in a folder: on Drive, or as a cache hit. */
+function liteDir(dir: string, split: string, judge: string[], drop: string[] = []): string {
+  fs.mkdirSync(dir, { recursive: true });
+  const files: Record<string, unknown> = { 'paired.json': [], 'features-real.json': [], 'features-requote.json': [], 'features-depth.json': [], 'split.json': { name: split, fit: SPLITS.dev.fit, judge, warm: [] }, 'twin-source.json': { replayVersion: 1 } };
+  for (const [f, v] of Object.entries(files)) if (!drop.includes(f)) fs.writeFileSync(path.join(dir, f), JSON.stringify(v));
+  return dir;
+}
+const putLite = (w: { drive: string }, run: string, split: string, judge: string[], drop: string[] = []) => liteDir(path.join(w.drive, `simulated/history-twin/${run}/twinlite`), split, judge, drop);
+/** The legs' windows as kept on Drive: windows/twin-HOW-pI/windows-HOW-pI-DAY.json */
+const putWindows = (w: { drive: string }, run: string, have: Partial<Record<(typeof HOWS)[number], string[]>>) => legsDir(have, path.join(w.drive, `simulated/history-twin/${run}/windows`));
+type Plan = Array<{ name: string; env?: Record<string, string>; skipIf?: () => boolean }>;
+function runPlan(job: 'verdict' | 'reverdict', w: ReturnType<typeof jobWs>, run: string, plan: Plan) {
+  const text = jobText(wf(), job); let failed: string | undefined; const outs: string[] = [];
+  for (const st of plan) {
+    if (st.skipIf?.()) continue;
+    const r = bash(expr(stepScript(text, st.name), { run }), { PATH: `${w.bin}:${process.env.PATH}`, RUNNER_TEMP: w.tmp, STUB_DRIVE: w.drive, STUB_CALLS: w.calls, ...(st.env ?? {}) }, w.ws);
+    outs.push(`${r.stdout}${r.stderr}`);
+    if (r.status !== 0) { failed = st.name; break; }
+  }
+  const rd = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
+  const looks = path.join(w.drive, 'derived/twin-confirm-looks');
+  return { failed, out: outs.join(''), log: rd(path.join(w.tmp, 'verdict.log')), nodeArgs: rd(path.join(w.tmp, 'node-args')).trim(), calls: rd(w.calls), looks: fs.existsSync(looks) ? fs.readdirSync(looks) : [], windows: winFiles(path.join(w.ws, 'data/twin')) };
+}
+const hitCache = (w: { ws: string }, split: string, judge: string[]) => liteDir(path.join(w.ws, 'data/twinlite'), split, judge);
+/** The step's own `if: hashFiles('data/twinlite/paired.json') == ''` (a test above holds the text): the step is skipped when the cache restored the file. */
+const cacheHit = (w: { ws: string }) => () => fs.existsSync(path.join(w.ws, 'data/twinlite/paired.json'));
+const REV_FROM_DRIVE = 'The judged features from Drive (the cache was evicted)', IN_PLACE = 'The judged features in place', REV_WINDOWS = "The legs' per-window P&L from Drive";
+const revPlan = (w: { ws: string }, note = ''): Plan => [
+  { name: REV_FROM_DRIVE, env: { RUN: '55' }, skipIf: cacheHit(w) }, { name: IN_PLACE, env: { RUN: '55' } }, { name: REV_WINDOWS, env: { RUN: '55' } }, { name: 'Verdict', env: { LOOK_NOTE: note } },
+];
+
+test('re-verdict, a run with no per-window P&L on Drive (no backtests, or a fast run): checks 2-4 are not re-read, the line says so, check 1 runs as before; a cache hit and a Drive read give the same answer', () => {
+  for (const cache of [true, false]) {
+    const w = jobWs();
+    if (cache) hitCache(w, 'dev', [...SPLITS.dev.judge]); else putLite(w, '55', 'dev', [...SPLITS.dev.judge]);
+    const r = runPlan('reverdict', w, '55', revPlan(w));
+    assert.equal(r.failed, undefined, r.out);
+    assert.ok(r.log.includes('[twin] no per-window P&L on Drive for run 55: checks 2-4 are not re-read\n'), r.log);
+    assert.match(r.log, /stub verdict saw windows files: 0/); assert.match(r.log, /adversary AUC 0\.55/);
+    assert.ok(r.log.indexOf('no per-window P&L') < r.log.indexOf('adversary AUC'), 'the stage appends to the log, it does not replace it');
+    assert.deepEqual(r.windows, []); assert.equal(r.nodeArgs, '--import tsx research/historyTwin.ts --stage verdict --out data/twin'); assert.deepEqual(r.looks, [], 'a dev re-verdict numbers no look');
+    assert.equal(/get simulated\/history-twin\/55\/twinlite/.test(r.calls), !cache, 'Drive is asked for the judged files only when the cache did not have them');
+    assert.match(r.calls, /get simulated\/history-twin\/55\/windows /);
+    assert.ok(fs.existsSync(path.join(w.ws, 'data/twin/paired.json')) && fs.existsSync(path.join(w.ws, 'data/twin/split.json')), 'the judged files are in place');
+  }
+});
+
+test('re-verdict, the legs\' windows are on Drive and whole: the four files are assembled from the run\'s own judged days and checks 2-4 are read; the lines are the verdict job\'s', () => {
+  const w = jobWs(); putLite(w, '55', 'dev', J3);
+  // the legs' folder also holds a day the split does not judge: it is never read
+  putWindows(w, '55', wholeLegs(['2026-11-13', '2026-11-14', '2026-11-16', '2026-11-17']));
+  const r = runPlan('reverdict', w, '55', revPlan(w));
+  assert.equal(r.failed, undefined, r.out);
+  for (const how of HOWS) assert.ok(r.log.includes(`[twin] backtest legs ${how}: 3 of 3 judged day(s) have a per-window file, 6 window(s)\n`), r.log);
+  assert.ok(r.log.includes('[twin] the per-window P&L on Drive for run 55 is whole: checks 2-4 are re-read\n'));
+  assert.deepEqual(r.windows, ['windows-depth.json', 'windows-placebo.json', 'windows-real.json', 'windows-requote.json']); assert.match(r.log, /stub verdict saw windows files: 4/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(w.ws, 'data/twin/windows-real.json'), 'utf8')).length, 6, 'the 4th day on Drive is not judged, so it is not in the file');
+  assert.deepEqual(r.looks, []);
+});
+
+test('re-verdict, the legs\' windows on Drive are INCOMPLETE: nothing is copied, the WARNING says how many day files each source has, and check 1 runs alone; a lost placebo part is as refused as a lost twin part', () => {
+  for (const [what, have, counts] of [
+    ['a lost depth day', { ...wholeLegs(J3), depth: J3.slice(0, 2) }, '3/3/3/2 of 3'], ['a lost placebo part', { ...wholeLegs(J3), placebo: [J3[0]] }, '3/1/3/3 of 3'], ['a lost real source', { ...wholeLegs(J3), real: [] }, '0/3/3/3 of 3'],
+  ] as Array<[string, Partial<Record<(typeof HOWS)[number], string[]>>, string]>) {
+    const w = jobWs(); putLite(w, '55', 'dev', J3); putWindows(w, '55', have);
+    const r = runPlan('reverdict', w, '55', revPlan(w));
+    assert.equal(r.failed, undefined, `${what}: ${r.out}`);
+    assert.ok(r.log.includes(`[twin] WARNING: the per-window P&L on Drive for run 55 is incomplete (real/placebo/requote/depth = ${counts} judged day(s)): checks 2-4 are not re-read\n`), `${what}: ${r.log}`);
+    assert.deepEqual(r.windows, [], `${what}: no windows file is copied`); assert.match(r.log, /stub verdict saw windows files: 0/, `${what}: the stage sees none, so outcome() never counts a missing window as P&L 0`);
+    assert.ok(r.log.includes('adversary AUC'), `${what}: check 1 is still read`); assert.ok(!/windows are whole|checks 2-4 are re-read/.test(r.log));
+    assert.ok(!fs.existsSync(path.join(w.tmp, 'win')) || winFiles(path.join(w.tmp, 'win')).length === 0, `${what}: not even the staging folder holds a file`);
+  }
+});
+
+test('re-verdict, no split.json, an unreadable split.json, or an rclone error on the windows: the first two never read a window, the third stops the job BEFORE any look is numbered', () => {
+  // no split.json among the judged files: the judged days are not known, so no window is read
+  const w1 = jobWs(); putLite(w1, '55', 'dev', J3, ['split.json']); putWindows(w1, '55', wholeLegs(J3));
+  const r1 = runPlan('reverdict', w1, '55', revPlan(w1)); assert.equal(r1.failed, undefined, r1.out);
+  assert.ok(r1.log.includes("[twin] WARNING: run 55's judged files have no split.json, so its judged days are not known: checks 2-4 are not re-read\n")); assert.deepEqual(r1.windows, []);
+  // a split.json with no judge list
+  const w2 = jobWs(); putLite(w2, '55', 'dev', J3); fs.writeFileSync(path.join(w2.drive, 'simulated/history-twin/55/twinlite/split.json'), JSON.stringify({ name: 'dev' })); putWindows(w2, '55', wholeLegs(J3));
+  const r2 = runPlan('reverdict', w2, '55', revPlan(w2)); assert.equal(r2.failed, REV_WINDOWS); assert.match(r2.log, /^\[twin\] ERROR: run 55's split\.json has no judge list: nothing was read and no look was numbered$/m); assert.deepEqual(r2.windows, []);
+  // an rclone error (not "nothing there"): the job stops here, and on a CONFIRM run the look was not numbered
+  const w3 = jobWs(); putLite(w3, '55', 'confirm', C3); putWindows(w3, '55', wholeLegs(C3));
+  const plan = revPlan(w3, 'round 3 final'); plan[2].env = { RUN: '55', STUB_GET_FAIL: '/windows' };
+  const r3 = runPlan('reverdict', w3, '55', plan);
+  assert.equal(r3.failed, REV_WINDOWS); assert.match(r3.log, /^\[twin\] ERROR: reading the per-window P&L of run 55 from Drive failed \(rclone exit 1\): nothing was read and no look was numbered$/m);
+  assert.deepEqual(r3.looks, [], 'no look file on Drive: the failure came before the Verdict step'); assert.equal(r3.nodeArgs, '', 'the verdict stage never ran'); assert.deepEqual(r3.windows, []);
+});
+
+test('re-verdict of a CONFIRM run: with whole windows it prints the blind aggregates of the confirm verdict job and nothing more, and it is another look (numbered after the data is in place); incomplete windows print day-file counts only', () => {
+  const note = 'round 3 final: re-read the windows';
+  const w = jobWs(); putLite(w, '55', 'confirm', C3); putWindows(w, '55', wholeLegs(C3));
+  const r = runPlan('reverdict', w, '55', revPlan(w, note));
+  assert.equal(r.failed, undefined, r.out);
+  for (const how of HOWS) assert.ok(r.log.includes(`[twin] backtest legs ${how}: 3 of 3 judged day(s) have a per-window file\n`), r.log);
+  assert.ok(!/window\(s\)/.test(`${r.out}${r.log}`), `no window count on a confirm split: ${r.log}`); assert.ok(!/-?\d+\.\d\d\b/.test(r.log.replace(/0\.55/g, '')), 'no P&L-looking number');
+  assert.deepEqual(r.looks, [`look-001-local-1.txt`], 'one more look, logged'); assert.ok(r.nodeArgs.includes(`--confirm-look 1 --confirm-look-note ${note}`), r.nodeArgs); assert.match(r.log, /stub verdict saw windows files: 4/);
+  assert.match(fs.readFileSync(path.join(w.drive, 'derived/twin-confirm-looks', r.looks[0]), 'utf8'), /^look 1\n/);
+  // the windows are in place before the number is taken: the Drive calls come in this order
+  const order = r.calls.split('\n').filter(Boolean).map((l) => l.split(' ').slice(0, 2).join(' '));
+  assert.deepEqual(order, ['get simulated/history-twin/55/twinlite', 'get simulated/history-twin/55/windows', 'get derived/twin-confirm-looks', 'put derived/twin-confirm-looks'], 'the judged files and the windows are read before the look is numbered');
+  // incomplete: day counts, no window count, the look is still another look (the stage runs)
+  const w2 = jobWs(); putLite(w2, '55', 'confirm', C3); putWindows(w2, '55', { ...wholeLegs(C3), requote: C3.slice(1) });
+  const r2 = runPlan('reverdict', w2, '55', revPlan(w2, note)); assert.equal(r2.failed, undefined, r2.out);
+  assert.ok(r2.log.includes('[twin] WARNING: the per-window P&L on Drive for run 55 is incomplete (real/placebo/requote/depth = 3/3/2/3 of 3 judged day(s)): checks 2-4 are not re-read\n'));
+  assert.ok(!/window\(s\)/.test(`${r2.out}${r2.log}`)); assert.deepEqual(r2.windows, []); assert.equal(r2.looks.length, 1);
+  // the note is still required, and it fails before a look is numbered
+  const w3 = jobWs(); putLite(w3, '55', 'confirm', C3); const r3 = runPlan('reverdict', w3, '55', revPlan(w3, '  '));
+  assert.equal(r3.failed, 'Verdict'); assert.match(r3.log, /\[twin\] ERROR: a re-verdict of a confirm run is another look at the confirm days: pass confirm_look_note/); assert.deepEqual(r3.looks, []);
+});
+
+test('no lite cache and no Drive copy: both jobs stop at the Drive read with ONE [twin] ERROR line, before anything is read, printed or numbered; so does a lite set that is not whole', () => {
+  // the re-verdict (a confirm run: the look must not be numbered), and the verdict job
+  const w = jobWs(); const plan = revPlan(w, 'a look'); const r = runPlan('reverdict', w, '55', plan);
+  assert.equal(r.failed, REV_FROM_DRIVE); assert.equal(r.log.trim(), "[twin] ERROR: run 55's features are neither cached nor on Drive (simulated/history-twin/55/twinlite; drive_lab.sh get exit 3, 3 = nothing there): nothing was read and no look was numbered");
+  assert.match(r.out, /::error::run 55's features are neither cached/); assert.equal(r.calls.trim(), 'get simulated/history-twin/55/twinlite data/twinlite', 'no windows were asked for'); assert.deepEqual(r.looks, []); assert.equal(r.nodeArgs, '');
+  const v = jobWs();
+  const vr = runPlan('verdict', v, '77', [{ name: REV_FROM_DRIVE, env: { RUN: '77' }, skipIf: cacheHit(v) }, { name: IN_PLACE }, { name: 'The per-window P&L from Drive' }, { name: 'Verdict', env: { LOOK_N: '4', LOOK_NOTE: 'a look', BACKTESTS: 'true', BT_RESULT: 'success', JUDGED: C3.join(','), SPLIT: 'confirm' } }]);
+  assert.equal(vr.failed, REV_FROM_DRIVE); assert.equal(vr.log.trim(), "[twin] ERROR: run 77's judged features are neither in the lite cache nor readable on Drive (simulated/history-twin/77/twinlite; drive_lab.sh get exit 3, 3 = nothing there): nothing was read and no verdict is made");
+  assert.equal(vr.calls.trim(), 'get simulated/history-twin/77/twinlite data/twinlite'); assert.equal(vr.nodeArgs, ''); assert.deepEqual(vr.looks, []);
+  // a Drive error (not "nothing there") says its exit code
+  const e = jobWs(); const er = runPlan('verdict', e, '77', [{ name: REV_FROM_DRIVE, env: { RUN: '77', STUB_GET_FAIL: '/twinlite' } }]); assert.match(er.log, /drive_lab\.sh get exit 1, 3 = nothing there/);
+  // a lite folder that is there but not whole (a half-written Drive copy): the in-place step refuses it, naming the file, before the data is read; a bad run id never reaches a path
+  for (const [job, run, tag] of [['reverdict', '55', 'no look was numbered'], ['verdict', '77', 'no verdict is made']] as const) {
+    const w2 = jobWs(); putLite(w2, run, 'confirm', C3, ['features-real.json']);
+    const plan2 = job === 'verdict' ? [{ name: REV_FROM_DRIVE, env: { RUN: run }, skipIf: cacheHit(w2) }, { name: IN_PLACE }] : [{ name: REV_FROM_DRIVE, env: { RUN: run }, skipIf: cacheHit(w2) }, { name: IN_PLACE, env: { RUN: run } }];
+    const r2 = runPlan(job, w2, run, plan2);
+    assert.equal(r2.failed, IN_PLACE, job); assert.ok(r2.log.includes(`[twin] ERROR: the judged features of run ${run} are not whole (missing: features-real.json): nothing was read and ${tag}`), r2.log);
+    assert.ok(!fs.existsSync(path.join(w2.ws, 'data/twin/paired.json')), `${job}: nothing was put in place`);
+  }
+  const bad = jobWs(); const br = runPlan('reverdict', bad, '55', [{ name: REV_FROM_DRIVE, env: { RUN: '5;rm -rf x' } }]);
+  assert.equal(br.failed, REV_FROM_DRIVE); assert.match(br.log, /^\[twin\] ERROR: reverdict_run must be a run id$/m); assert.equal(br.calls, '', 'no Drive call for a run id that is not digits');
+});
+
+test('the verdict job, without the big cache: the judged files from the lite cache or from Drive, then (with backtests) the windows from Drive and the same completeness guard; a lite miss is no failure', () => {
+  for (const cache of [true, false]) for (const backtests of [true, false]) {
+    const w = jobWs();
+    if (cache) hitCache(w, 'dev', J3); else putLite(w, '77', 'dev', J3);
+    if (backtests) putWindows(w, '77', wholeLegs(J3));
+    const plan: Plan = [{ name: REV_FROM_DRIVE, env: { RUN: '77' }, skipIf: cacheHit(w) }, { name: IN_PLACE }];
+    if (backtests) plan.push({ name: 'The per-window P&L from Drive' });
+    plan.push({ name: 'Verdict', env: { LOOK_N: '', LOOK_NOTE: '', BACKTESTS: String(backtests), BT_RESULT: backtests ? 'success' : 'skipped', JUDGED: J3.join(','), SPLIT: 'dev', FAST: 'false' } });
+    const r = runPlan('verdict', w, '77', plan);
+    assert.equal(r.failed, undefined, `cache ${cache}, backtests ${backtests}: ${r.out}`);
+    assert.equal(r.log.includes('[twin] the judged features of run 77 were read from Drive (the lite cache is gone)\n'), !cache);
+    assert.equal(/backtest legs real: 3 of 3 judged day\(s\) have a per-window file, 6 window\(s\)/.test(r.log), backtests); assert.match(r.log, backtests ? /stub verdict saw windows files: 4/ : /stub verdict saw windows files: 0/);
+    assert.ok(!fs.existsSync(path.join(w.ws, 'data/twin/real')) && !fs.existsSync(path.join(w.ws, 'data/models')), 'the big cache\'s folders are not needed');
+    assert.deepEqual(r.looks, [], 'the verdict job numbers no look');
+  }
+  // a lost leg is still not a verdict (the existing guard, now fed by the script): an incomplete set fails the job before the stage, with the counts
+  const w = jobWs(); hitCache(w, 'dev', J3); putWindows(w, '77', { ...wholeLegs(J3), depth: J3.slice(0, 2) });
+  const r = runPlan('verdict', w, '77', [{ name: IN_PLACE }, { name: 'The per-window P&L from Drive' }, { name: 'Verdict', env: { LOOK_N: '', LOOK_NOTE: '', BACKTESTS: 'true', BT_RESULT: 'success', JUDGED: J3.join(','), SPLIT: 'dev' } }]);
+  assert.equal(r.failed, 'Verdict'); assert.match(r.log, /^\[twin\] ERROR: backtest legs incomplete \(backtest jobs: success; per-window day files real\/placebo\/requote\/depth = 3\/3\/3\/2 of 3\): checks 2-4 are not valid and no PASS\/FAIL is printed\./m); assert.equal(r.nodeArgs, '');
+  // on the confirm split the build's look is printed by the stage from the job's own output; nothing numbers a look here
+  const c = jobWs(); hitCache(c, 'confirm', C3); putWindows(c, '77', wholeLegs(C3));
+  const cr = runPlan('verdict', c, '77', [{ name: IN_PLACE }, { name: 'The per-window P&L from Drive' }, { name: 'Verdict', env: { LOOK_N: '3', LOOK_NOTE: 'the look', BACKTESTS: 'true', BT_RESULT: 'success', JUDGED: C3.join(','), SPLIT: 'confirm' } }]);
+  assert.equal(cr.failed, undefined, cr.out); assert.ok(cr.nodeArgs.includes('--confirm-look 3 --confirm-look-note the look')); assert.deepEqual(cr.looks, []); assert.ok(!/window\(s\)/.test(`${cr.out}${cr.log}`));
+});
+
+// ---- fix round 1 (usability): a script that did not RUN is not "the legs are incomplete" ----
+// twin-windows.py's contract is exit 0 = whole, 3 = incomplete, 2 = bad arguments. A missing file (the new file that was never `git add`ed: RUNBOOK 3.0 check 1d), a crash or a
+// missing python3 gives 2, 1 or 127: the re-verdict used to read every non-zero exit as "incomplete" and went on to the Verdict step, which numbers and logs a blind look on a
+// CONFIRM run and prints check 1 only (a burned look); the verdict job blamed the legs with an empty '?'. Now only exit 3 degrades, anything else fails BEFORE the Verdict step.
+
+/** Replaces the workspace's twin-windows.py: absent (the file is not on the ref), or a stub that exits with CODE. */
+function breakWindowsPy(w: { ws: string }, how: 'missing' | number | 'crash') {
+  const f = path.join(w.ws, '.github/scripts/twin-windows.py');
+  if (how === 'missing') fs.rmSync(f);
+  else fs.writeFileSync(f, how === 'crash' ? 'import json\njson.load(open("/no/such/file"))\n' : `import sys\nsys.exit(${how})\n`);
+}
+
+test('re-verdict with twin-windows.py missing, crashed or exiting oddly: the job fails at the windows step with its own [twin] ERROR line, BEFORE the Verdict step: no look is numbered, the stage never runs, no window is copied and no "incomplete" WARNING blames the legs', () => {
+  for (const [what, how, exit] of [['the file is not on the ref', 'missing', 2], ['the script crashes', 'crash', 1], ['an exit code of its own', 7, 7]] as Array<[string, 'missing' | 'crash' | number, number]>) {
+    for (const [split, judge, note] of [['confirm', C3, 'round 3 final: re-read the windows'], ['dev', J3, '']] as Array<[string, string[], string]>) {
+      const w = jobWs(); putLite(w, '55', split, judge); putWindows(w, '55', wholeLegs(judge)); breakWindowsPy(w, how);
+      const r = runPlan('reverdict', w, '55', revPlan(w, note));
+      const at = `${what}, ${split}`;
+      assert.equal(r.failed, REV_WINDOWS, `${at}: ${r.out}`);
+      assert.ok(r.log.includes(`[twin] ERROR: twin-windows.py failed (exit ${exit}; 2 = bad arguments or the file is not on this ref, see RUNBOOK 3.0 check 1d): the legs' per-window P&L of run 55 was not assembled, nothing was read and no look was numbered\n`), `${at}: ${r.log}`);
+      assert.match(r.out, /::error::twin-windows\.py failed \(exit /, at);
+      assert.ok(!/WARNING|incomplete|are not re-read|checks 2-4 are re-read/.test(r.log), `${at}: the failure does not read as a lost leg or as a degraded verdict: ${r.log}`);
+      assert.ok(!/= \?/.test(r.log), `${at}: no unexplained '?'`);
+      assert.deepEqual(r.looks, [], `${at}: no look file on Drive`); assert.equal(r.nodeArgs, '', `${at}: the verdict stage never ran`); assert.deepEqual(r.windows, [], `${at}: no window file copied`);
+      assert.ok(!/derived\/twin-confirm-looks/.test(r.calls), `${at}: twin-look.sh was never called (it would have read the look log from Drive): ${r.calls}`);
+    }
+  }
+  // the ONE case that still degrades to check 1: the script ran and found the set incomplete (exit 3, tested above); a whole set and an unbroken script still give checks 2-4
+  const ok = jobWs(); putLite(ok, '55', 'confirm', C3); putWindows(ok, '55', wholeLegs(C3));
+  const okr = runPlan('reverdict', ok, '55', revPlan(ok, 'a look')); assert.equal(okr.failed, undefined, okr.out); assert.equal(okr.looks.length, 1);
+});
+
+test('verdict job with twin-windows.py missing or crashed: its Verdict step fails with the script\'s own message (not "backtest legs incomplete ... = ?"), before the stage and before anything is printed; an incomplete set (exit 3) still says the legs are incomplete', () => {
+  for (const [what, how, exit] of [['the file is not on the ref', 'missing', 2], ['the script crashes', 'crash', 1]] as Array<[string, 'missing' | 'crash', number]>) {
+    const w = jobWs(); hitCache(w, 'confirm', C3); putWindows(w, '77', wholeLegs(C3)); breakWindowsPy(w, how);
+    const r = runPlan('verdict', w, '77', [{ name: IN_PLACE }, { name: 'The per-window P&L from Drive' }, { name: 'Verdict', env: { LOOK_N: '3', LOOK_NOTE: 'the look', BACKTESTS: 'true', BT_RESULT: 'success', JUDGED: C3.join(','), SPLIT: 'confirm' } }]);
+    assert.equal(r.failed, 'Verdict', what);
+    assert.ok(r.log.includes(`[twin] ERROR: twin-windows.py failed (exit ${exit}; 2 = bad arguments or the file is not on this ref, see RUNBOOK 3.0 check 1d): the legs' per-window P&L was not assembled and no PASS/FAIL is printed. Fix the cause, then re-verdict this run (reverdict_run): nothing needs rebuilding\n`), `${what}: ${r.log}`);
+    assert.ok(!/backtest legs incomplete|= \?/.test(r.log), `${what}: the legs are not blamed: ${r.log}`);
+    assert.equal(r.nodeArgs, '', `${what}: the stage never ran`); assert.deepEqual(r.looks, []); assert.deepEqual(r.windows, []);
+  }
+  // a lost leg, by the matrix result alone (the script ran and exited 0 or 3): still "backtest legs incomplete"
+  const w = jobWs(); hitCache(w, 'dev', J3); putWindows(w, '77', wholeLegs(J3));
+  const r = runPlan('verdict', w, '77', [{ name: IN_PLACE }, { name: 'The per-window P&L from Drive' }, { name: 'Verdict', env: { LOOK_N: '', LOOK_NOTE: '', BACKTESTS: 'true', BT_RESULT: 'failure', JUDGED: J3.join(','), SPLIT: 'dev' } }]);
+  assert.equal(r.failed, 'Verdict'); assert.match(r.log, /^\[twin\] ERROR: backtest legs incomplete \(backtest jobs: failure; per-window day files real\/placebo\/requote\/depth = 3\/3\/3\/3 of 3\)/m); assert.equal(r.nodeArgs, '');
+});
+
+test('the workflow splits twin-windows.py\'s exit code in both jobs: 0 whole, 3 incomplete, anything else fails through twin_fail (a text pin; the two tests above run it)', () => {
+  const y = wf();
+  const rev = stepScript(jobText(y, 'reverdict'), "The legs' per-window P&L from Drive"), ver = stepScript(jobText(y, 'verdict'), 'Verdict');
+  assert.match(rev, /if \[ "\$rc" -eq 0 \]; then\n\s+cp "\$RUNNER_TEMP"\/win\/windows-\*\.json data\/twin\/[\s\S]*elif \[ "\$rc" -eq 3 \]; then\n\s+echo "\[twin\] WARNING: the per-window P&L on Drive for run \$RUN is incomplete[\s\S]*else\n\s+twin_fail "twin-windows\.py failed \(exit \$rc;/);
+  assert.match(ver, /if \[ "\$rc" -ne 0 \] && \[ "\$rc" -ne 3 \]; then\n\s+twin_fail "twin-windows\.py failed \(exit \$rc;[\s\S]*if \[ "\$BT_RESULT" != success \] \|\| \[ "\$rc" -ne 0 \]; then\n\s+twin_fail "backtest legs incomplete/);
+  // the WARNING is reached by exit 3 only: nothing else prints it
+  assert.equal((rev.match(/WARNING: the per-window P&L on Drive/g) ?? []).length, 1);
+});
