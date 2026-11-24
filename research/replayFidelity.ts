@@ -260,10 +260,19 @@ function realDir(rec: string, work: string, meta: FidelityMeta): string {
 }
 
 export type Windows = Awaited<ReturnType<typeof backtestMain>>['windows'];
+/** The whole result of a backtest run (R3a: the settled positions, the entry evaluations, the fills), beside its windows. */
+export type BacktestRun = Awaited<ReturnType<typeof backtestMain>>;
 
 /** The decision model's backtest on one folder of days, as the pipeline runs it for the decision model
- *  (research/pipeline.ts, mlp): the production exit settings, the vol forecast and the fill model next to the model. */
+ *  (research/pipeline.ts, mlp): the production exit settings, the vol forecast and the fill model next to the model.
+ *  Its windows only: the signature and the printed [fidelity] lines are what they always were (`backtestDirRun` has the rest). */
 export async function backtestDir(dir: string, model: string, extra: Record<string, string> = {}): Promise<Windows> {
+  return (await backtestDirRun(dir, model, extra)).windows;
+}
+
+/** `backtestDir`'s body, returning the whole result as well as the windows (R3a, the per-position dump of research/historyTwin.ts
+ *  stageBacktest). It prints exactly the lines `backtestDir` always printed and adds none. */
+export async function backtestDirRun(dir: string, model: string, extra: Record<string, string> = {}): Promise<BacktestRun> {
   const cfg = loadConfig(paperEnv(process.env));
   const models = path.dirname(model);
   const opt = (f: string) => (fs.existsSync(path.join(models, f)) ? path.join(models, f) : '');
@@ -291,7 +300,7 @@ export async function backtestDir(dir: string, model: string, extra: Record<stri
   const rej = Object.entries(r.exchangeRejected ?? {}).map(([k, n]) => `${k} x${n}`).join('; ');
   console.log(`[fidelity] ${path.basename(dir)} at the end: cash $${r.end?.balance.toFixed(2)}, ${r.end?.openPositions} open positions (worst loss $${r.end?.openMaxLoss.toFixed(2)}), ${r.end?.openOrders} resting orders${rej ? ` | exchange refused: ${rej}` : ''}${r.makerMarkout ? ` | maker fills' 60 s markout ${(r.makerMarkout.mean * 100).toFixed(2)}c a contract (${r.makerMarkout.n})` : ''}`);
   console.log(`[fidelity] ${path.basename(dir)} entry funnel: ${Object.entries(r.funnel ?? {}).map(([k, n]) => `${k} ${n}`).join('; ')}`);
-  return w;
+  return { windows: w, result: r };
 }
 
 const writeWindows = (file: string, w: Windows) => fs.writeFileSync(file, JSON.stringify([...w.entries()]));

@@ -1,68 +1,278 @@
 # Can a deep-history day stand in for a real recorded Kalshi day? (research/historyTwin.ts; Steven, Nov 1.) Each recorded
 # day is rebuilt by the deep-history pipeline itself (research/kalshiReplayData.ts: Binance 1-minute bars + Kalshi's
 # public minute candles, requote), then the tally's depth fill-in on top, and judged against the real day: paired
-# mechanics, a classifier adversary trying to tell the two apart, and the decision model's backtest window by window
-# beside a noise floor (the real days at +250 ms).
+# mechanics, a classifier adversary trying to tell the two apart (plus a report-only tree adversary), and, on request, the
+# decision model's backtest window by window beside a noise floor (the real days at +250 ms).
 #
-# No server access at all: the real days come from an earlier Replay fidelity run's cache (reuse_run), and both sides are
-# backtested with the repository's paper settings (the same settings both ways, which is all a like-for-like test needs). This repository is public: jobs
-# print counts, cents and $ only; recordings move between jobs through the Actions cache, never artifacts.
+# THE HARNESS (Nov 22; depth-simulator/ralph-twin/RUNBOOK.md has the exact dispatches). A real full-depth day is 1.4-2.3 GB
+# gzipped, so re-parsing it on every iteration took hours. Instead:
+#   1. PREP (dispatch with prep_days): each real day is reduced ONCE to its 15-minute-series records and cached on Drive
+#      as derived/twin-real15m/DAY/ (md-DAY.jsonl.gz + meta.json). A dispatch with prep_days runs ONLY prep.
+#   2. BUILD (every other dispatch): reads those small days from Drive (it stops, naming the days and the prep_days input to
+#      run, if one is missing), fits the depth model on the FIT days only, builds the twin side (requote days from Drive
+#      simulated/kalshi-replay-200d while its manifest is this code's REPLAY_VERSION, else regenerated), and judges it.
+#      split=dev: iteration decisions are read here. split=confirm: read at the end of a round, never tuned on (its verdict
+#      prints only the checks (ok/no), the AUC, the STRESS AUC, day counts and, for the amended check 3 (J1), stop-out and
+#      window counts with two p-values, never a per-window number). Fit days and judged days must never overlap.
+#   3. Backtests (checks 2-4) run only with backtests=true; the lag arms only with lag_arms=true (their fit is invalid until the
+#      quote lag is refit on post-Nov-10 recordings).
+#   4. The confirm days (2026-11-18..20) are HELD OUT (a recorded-data hold-out; not a future-day test): only split=confirm reads them (dev and custom refuse them as fit, judged or
+#      warm-up days), it needs confirm_look_note (every look is numbered and logged on Drive), and everything it prints, the
+#      backtest legs included, is counts and ok/no. The backtests' per-window P&L goes to Drive, never to an artifact.
+#   5. Jobs at once: prep and build share ONE concurrency group (never together), both matrices run 7 at a time, so a re-verdict
+#      beside them keeps this thread at 8 or fewer (the brief's rule; the hard limit is 10).
+#   6. A failure's reason is written into the job's log file as '[twin] ERROR: ...' (.github/scripts/twin-lib.sh and the stages'
+#      own catch), which the commit comment keeps; the prep jobs' commit marks are reported by one prep-report job (a failed day
+#      also names the step it stopped at). A refused prep list has its own comment (prep-plan); a job that dies before it has a
+#      log says so and names its step, and its reason is an annotation of the run (gh run view RUN).
+#   7. A run whose backtest matrix has any red job, or lacks a per-window file for any judged day of any source, is NOT a
+#      verdict: the verdict job fails with '[twin] ERROR: backtest legs incomplete' before it prints any PASS/FAIL.
+#   8. THE SWEEP (sweep_gen; RUNBOOK 'The depth simulator sweep'). The depth simulator's dynamic constants (research/history/
+#      depthSim.ts DepthSimParams) are fitted by a machine optimizer, with the judge as the objective, on the FIT days only
+#      (2026-11-11,2026-11-12,2026-11-15: the dev split's; a sweep never reads a DEV or CONFIRM day, and refuses any other split).
+#      Dispatch sweep_gen=0 (the defaults plus a Latin hypercube of the parameter space), then sweep_gen=1,2,... each with
+#      sweep_parents_run=<the previous sweep run> (a cross-entropy step around its best 20 percent). sweep-plan checks the inputs
+#      (exclusive with prep_days and reverdict_run), then sweep_shards shard jobs (at most 7 at once, timeout 340) each read the
+#      prepped real FIT days and the requote FIT days (Drive simulated/kalshi-replay-200d while its manifest is this code's
+#      REPLAY_VERSION, else regenerated, as the build does), fit the depth model once on the FIT days, judge sweep_candidates
+#      candidates each (the loss is the all-feature leave-one-day-out adversary AUC; research/historyTwin.ts --stage sweep) and
+#      keep their results, copy only, on Drive simulated/history-twin-sweep/RUN/shards. sweep-collect merges the shards, prints
+#      the top 5 (numbers only), writes best.json, elite.json and results.json to simulated/history-twin-sweep/RUN/ and says the
+#      exact dispatch for the next generation, and the best candidate's exact parameters on one line (every digit: the number
+#      a promotion to the code defaults pastes; the other lines round to 4 digits). A generation that is not whole is refused,
+#      naming the incomplete shards, unless THAT dispatch carried sweep_partial=true (there is no way to re-collect a finished
+#      run as partial); a red shard job is re-run with gh run rerun RUN --failed (same run id), a green shard that stopped at its
+#      budget is not helped by a re-run. The DEV verdict of the best candidate is read by a normal split=dev dispatch with
+#      depth_params_run=RUN (add fast=true for the 1 h route of item 9; the collect comment prints both commands), which puts best.json's params into the depth fill-in and logs every parameter it used. A sweep,
+#      a prep, a build and a confirm run share one concurrency group: heavy runs never overlap.
+#   9. THE FAST DEV RUN (fast=true; RUNBOOK 3.2.1). Every optimizer round is judged by a dev run, so its wall time is the loop's limit (the
+#      full route took 4 h 16 min: the filled days are written as gzip and read back, each real day is parsed four times). With fast=true
+#      (split dev or custom only; REFUSED on confirm, with backtests and with lag_arms) the build job builds the requote, depth AND real rows
+#      in one stage (research/historyTwin.ts --stage fastrows: the depth side in-stream, no filled day), writes the same judged files and
+#      prints the same [twin] lines, so the verdict job is unchanged, plus a '[twin] fast: STEP N s' line per step. real_features_run (a prior
+#      run id) takes the real side's rows, paired mechanics and activity lines from that run's Drive copy instead of parsing the real days,
+#      and depth_model_run takes that run's depth model instead of the fit; each is refused unless it was built for exactly these days,
+#      prepped real days, requote days and code (the stage says which differs). Both are fast only; the full route is unchanged.
+#  10. THE PER-ASSET CALIBRATION (round R2; RUNBOOK 4.2). Right after the depth model is fitted (both routes, the confirm refit included), the
+#      calibrate stage (research/historyTwin.ts --stage calibrate, research/history/depthCalibrate.ts) fits five neutral-1 multipliers per
+#      asset (trade rate and size, level size, best-level size, quote-change rate) so that the twin's means on the FIT days meet the real FIT
+#      days', K <= 5 damped fixed-point iterations of the fill-in over the FIT days' requote days (data/replay-fit, never data/replay-src: a FIT
+#      day there would change which real contracts a judged day keeps), prints '[twin] calibration:' lines and a held-in leave-one-fit-day-out
+#      check, and writes the `calibration` block into the model file (schema 3). It reads the model's own days only. A fast run with depth_model_run
+#      fits nothing: the model carries its calibration, and a model without one is refused. The calibration is a fit of the simulator it was fitted
+#      with, so its block is stamped with the code (a hash of depthSim.ts without comments, REPLAY_VERSION, FEATURE_CODE_VERSION) and a reused model
+#      whose stamp is not this ref's, or has none, is refused (calibration-check). It fits to the real FIT lives whose contract the requote FIT day
+#      has (the judge's population; the stage prints `real FIT lives kept a of b`). The real FIT rows are kept beside the judged real side
+#      (real-fit-features.json, under real-meta.json's key; every contract, unrestricted); real_features_run refuses a run that lacks them or has other fit days.
+#  11. THE VERDICT NEVER NEEDS THE BIG CACHE (round S2). The build keeps two caches: the small judged files (history-twin-lite-RUN, 518 KB) and, with
+#      backtests, data/twin + data/models (history-twin-RUN, 9 GB), which only the backtest legs restore (with a Drive fallback). GitHub's repository
+#      cache limit is 10 GB and it evicts the least recently used entries, so a 9 GB cache can be gone within the hour: P2b's verdict job failed on
+#      that miss 12 minutes after its legs finished, and a 3.4-hour run gave no verdict. The verdict and re-verdict jobs read only the lite cache
+#      (a miss is not a failure: Drive simulated/history-twin/RUN/twinlite has the same files; neither = one '[twin] ERROR' line before anything is read)
+#      and the legs' per-window P&L from Drive (.github/scripts/twin-windows.py assembles it, for both jobs). A re-verdict of a run with backtests
+#      re-reads checks 2-4 from Drive when the legs' windows are whole there (reverdict_run=RUN); an incomplete set is not used (check 1 only).
+#      A confirm look is numbered by the build job (the verdict job only prints it) or, for a re-verdict, by its Verdict step AFTER every step that reads data.
+#  12. THE PER-POSITION DUMP (round R3a; RUNBOOK 3.5, 3.6, 4; REPORT ONLY). Each dev or custom backtest leg also writes positions-HOW-pN-DAY.json beside its
+#      windows file (research/historyTwin.ts --stage backtest --positions: one row per settled position of the judged day, by asset, hourly strike or not, close
+#      time, window contracts and P&L in cents, plus the run's entry evaluations, fills and contracts) and prints counts-only '[twin] positions HOW pN' lines, so
+#      the next round can see which asset, hour or kind of strike the twin's extra entries come from. A confirm leg is never asked for it (the stage refuses the
+#      flag on a confirm day) and writes and prints nothing new. The windows files, the [fidelity] lines and every verdict number are unchanged. The verdict and
+#      re-verdict jobs then print .github/scripts/twin-positions.py's comparison (requote, depth and placebo against real) in a step of their own, after the
+#      verdict, with continue-on-error: it never decides a pass and never fails a job.
+#  13. THE ENTRY-STATE PROBE (round R3b; RUNBOOK 3.2.1, 3.6, 4; REPORT ONLY). Why does the decision model enter ETH, SOL and XRP on twin days and not on
+#      real days? A policy-free read of the state the policy reads at entry time (the quote against the fair value, the spread, the model's own price and its
+#      take edge, the volatility, every model input feature), per asset, for the real day, the requote twin and the depth twin side by side, with no
+#      backtest. Inputs probe=true (FAST route, dev or custom only; refused with confirm, backtests, lag_arms) and probe_days (empty = the judged days; the FIT
+#      days are allowed too, a confirm day never). One step after 'Fast rows' with continue-on-error, a timeout and a final exit 0: it can never fail the job,
+#      number a look or change a verdict number. Counts, cents, shares and z-scores only; the probe files go to Drive under probe/ (copy only) and research/
+#      historyTwin.ts --stage probe-report re-prints them without recomputing. The job log gets the status lines, the units, a line per day whose process died and
+#      the scrubbed tail of a failed log; build.log (the build comment's tail) only the bounded lines (the whole report is a comment of its own); the inner limits
+#      (fill-in 300 s, day passes 900 s) nest inside the step's 25 minutes; probe-days.json keeps the requested day numbers when a day wrote no file. The step runs as
+#      GitHub runs a step with no shell: (bash -e {0}) and still ends 0 with its WARNING (R3b fix 2): -e is off in the step's shell and on inside the subshell that does
+#      the work; a day's process leaves a marker before it starts, so a day that was running when the limit cut it (or was killed) is told from one that never started,
+#      and the WARNING names the days by cause first (exit codes, cut, never started); the FIT-day advice is a line of its own, only for a REQUESTED day without a requote day.
+# The older routes (a Replay fidelity run's cached copy, a server copy slot) are gone from this file; commit 3be29e0 has them.
+#
+# No server access at all. This repository is public: jobs print counts, cents, $ and AUCs only; recordings never go to
+# artifacts or the cache (the Actions cache holds only the small judged files and, for backtests, the restricted days);
+# Drive uploads are copy-only (nothing is ever deleted on Drive).
 name: History twin
 
 on:
   # A new workflow can't be dispatched until it is on main: while on its branch, a push of its own files runs it.
   push:
     branches: [claude/project-thread-lq48hg, claude/project-thread-qj4n4v]
-    paths: ['.github/workflows/history-twin.yml', 'research/historyTwin.ts', 'research/history/depthSim.ts']
+    paths: ['.github/workflows/history-twin.yml', 'research/historyTwin.ts', 'research/history/depthSim.ts', 'research/history/depthCalibrate.ts']
   workflow_dispatch:
     inputs:
-      reuse_run:
-        description: 'Replay fidelity run whose cached days (recordings, older fit days, models) are the real side'
-        required: true
-        default: '41351064742'
-      reverdict_run:
-        description: 'Only the verdict again, on the judged features an earlier push build cached (its run id); nothing else runs'
+      prep_days:
+        description: 'PREP ONLY: recorded days to reduce to their 15-minute records and cache on Drive (derived/twin-real15m), comma list of YYYY-MM-DD, whole days before today. When set, nothing else runs.'
         required: false
         default: ''
+      force_prep:
+        description: 'Prep a day again even when Drive has it with the same version tag'
+        type: boolean
+        default: false
+      split:
+        description: 'dev = fit 2026-11-11,2026-11-12,2026-11-15, judge 2026-11-13,2026-11-14,2026-11-16,2026-11-17. confirm = fit 2026-11-11,2026-11-12,2026-11-15,2026-11-13,2026-11-14,2026-11-16,2026-11-17, judge 2026-11-18,2026-11-19,2026-11-20 (read once a round, never tuned on). custom = fit_days and judge_days. The confirm days are read only through split=confirm: dev and custom refuse them.'
+        type: choice
+        options: [dev, confirm, custom]
+        default: dev
+      fit_days:
+        description: 'split=custom: days the depth model is fitted on (comma list of YYYY-MM-DD); must not overlap judge_days; never the confirm days 2026-11-18,2026-11-19,2026-11-20 (they are read only through split=confirm with a confirm_look_note)'
+        required: false
+        default: ''
+      judge_days:
+        description: 'split=custom: days the twin is judged on (comma list of YYYY-MM-DD): AT LEAST 2 (leave-one-day-out needs a day to hold out; with one the AUC is a flat 0.500; 3 or more recommended); never the confirm days 2026-11-18,2026-11-19,2026-11-20'
+        required: false
+        default: ''
+      warm_day:
+        description: 'Optional warm-up day for the backtests (backtests=true only; not a confirm day unless split=confirm). Default: the day before each judged day, when it is cached'
+        required: false
+        default: ''
+      confirm_look_note:
+        description: 'split=confirm: REQUIRED, the run fails without it (before any day is pulled). Why this look (free text, 200 characters). It numbers the look, logs it on Drive and the verdict prints CONFIRM LOOK #n. A build that fails after the number was taken still used that number: write "look #n, no verdict read" in the round file'
+        required: false
+        default: ''
+      backtests:
+        description: 'Also run the backtest legs (checks 2-4: real, placebo +250 ms, requote, depth); needs model_drive'
+        type: boolean
+        default: false
+      model_drive:
+        description: 'backtests only: Drive folder under models/ that holds model.json (and optionally vol_model.json, fill_model.json)'
+        required: false
+        default: ''
+      lag_arms:
+        description: 'Also build the lag arms (lag, lagdepth). Off: their fit is invalid until the quote lag is refit on post-Nov-10 recordings'
+        type: boolean
+        default: false
       parts:
-        description: 'Runners per backtest (the compared days split into this many runs)'
+        description: 'Runners per backtest (the judged days split into this many runs)'
         required: false
         default: '4'
+      reverdict_run:
+        description: 'Only the verdict again, on the judged features an earlier build cached (its run id); nothing else runs'
+        required: false
+        default: ''
+      sweep_gen:
+        description: 'SWEEP ONLY: tune the depth simulator''s dynamic constants on the FIT days only (2026-11-11,2026-11-12,2026-11-15; never a DEV or CONFIRM day). A parameter search with the judge as the objective, played over an UNCALIBRATED depth model (the per-asset calibration of round R2 is a different step: RUNBOOK 4.2, 9). The generation: 0 = the defaults plus a Latin hypercube of the parameter space; 1 and later = a cross-entropy step around the elite of sweep_parents_run. Exclusive with prep_days and reverdict_run; nothing else runs.'
+        required: false
+        default: ''
+      sweep_candidates:
+        description: 'sweep_gen: candidates PER SHARD (1 to 500). The population is sweep_shards x sweep_candidates'
+        required: false
+        default: '8'
+      sweep_shards:
+        description: 'sweep_gen: shards, one runner each, all at once (1 to 7)'
+        required: false
+        default: '7'
+      sweep_parents_run:
+        description: 'sweep_gen 1 and later: the run id of the previous generation (its elite.json on Drive simulated/history-twin-sweep/RUN/)'
+        required: false
+        default: ''
+      sweep_partial:
+        description: 'sweep_gen: accept a generation that lost a shard or some candidates (otherwise an incomplete one is refused). Read only by the dispatch that RUNS the shards: a finished run cannot be re-collected as partial (re-run a red shard job with gh run rerun RUN --failed instead)'
+        type: boolean
+        default: false
+      depth_params_run:
+        description: 'A normal dev or custom dispatch: the run id of a sweep whose best.json params go into the depth fill-in (the run logs every parameter it used). Not for split=confirm: promote the params to the code defaults first. The params REPLACE the model''s calibrated tradeRateMult, tradeSizeMult and levelSizeMult for every asset (a WARNING is printed; RUNBOOK 4.2, 9): the verdict is a hybrid no sweep scored (the sweep tuned them over an UNCALIBRATED model; the calibration''s topSizeMult and flickMult still apply), not the calibrated twin''s, and is not comparable with a plain R2 verdict'
+        required: false
+        default: ''
+      fast:
+        description: 'FAST dev run (split dev or custom only; refused with split=confirm, backtests and lag_arms): the requote, depth and real rows are built in one stage with no filled day written (RUNBOOK 3.2.1). Same files and [twin] lines as the full run, plus [twin] fast: lines with the seconds of each step'
+        type: boolean
+        default: false
+      real_features_run:
+        description: 'fast only: the run id of an earlier dev or custom run (full or fast) whose real side (judged real rows, paired mechanics, activity lines) is reused instead of parsing the real days. Refused unless it was built for exactly these days, real days, requote days and feature code, and it kept its real FIT rows (real-fit-features.json: a run of before round R2 has none)'
+        required: false
+        default: ''
+      depth_model_run:
+        description: 'fast only: the run id of an earlier build whose depth model (Drive simulated/history-twin/RUN/models) is used instead of the fit. Refused unless it records exactly these fit days, the current study version and its per-asset calibration (the model carries it: it is not fitted again), and that calibration was fitted by this ref''s code (simulator source, requote layer, feature code: a stale one is refused)'
+        required: false
+        default: ''
+      probe:
+        description: 'FAST dev run only (REPORT ONLY; refused with split=confirm, backtests and lag_arms, and without fast=true or model_drive): after the fast rows, a policy-free probe of the ENTRY-TIME STATE per asset for real, requote and depth (spread, fair value against the quote, the decision model price against the quote, its take-edge shares, sigma, every model input feature in real within-asset sd), counts, cents, shares and z-scores only. It needs the decision model to price with: model_drive. It can never fail the job (RUNBOOK 3.2.1, 4)'
+        type: boolean
+        default: false
+      probe_days:
+        description: 'probe only: comma list of YYYY-MM-DD days to probe, each a fit or judged day of the split (empty = the split''s judged days; the FIT days are fine: state marginals only, no backtest outcome is read). Never a confirm day'
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  # A re-verdict (minutes, no data) never waits behind a build (hours).
-  group: history-twin-${{ inputs.reverdict_run || 'build' }}
+  # The 8-job rule holds per thread, not per matrix: a prep (7 jobs) and a build (its backtest matrix, 7 jobs) never run together
+  # (one group, 'heavy'), and a re-verdict (1 job, minutes, no data) never waits behind them (its own group): 7 + 1 = 8.
+  # GitHub keeps ONE pending run per group (a newer pending dispatch replaces an older pending one): dispatch the next heavy run
+  # only when the last one is done.
+  group: history-twin-${{ inputs.reverdict_run && 'reverdict' || 'heavy' }}
   cancel-in-progress: false
 
 env:
   NODE_OPTIONS: --max-old-space-size=12288
-  # 'yes' only while the coordinator has handed this thread the server copy slot: with no cached copy of real days,
-  # the build then copies the newest 5 recorded days, 3 older fit days and the models once, capped at 8 MB/s.
-  SERVER_COPY: 'no'
-  # Real side (Nov 2): losses' replay check copy A2 (Oct 29 - Nov 2) + Replay fidelity run 41395733162's fit days Oct 27-28.
-  CHECK_COPY: '41394321652'
-  FIT_RUN: '41395733162'
-  TWIN_DAYS: '3'
-  # The same days on Drive (the warm-up day first), for when the check copy is evicted.
-  DRIVE_DAYS: '2026-10-29,2026-10-30,2026-10-31,2026-11-01'
-  # Nov 4: the depth model fitted on Oct 27-28 gave tops ~37x and trades ~3x the compared days' (15-minute books only, so
-  # not the hourly ones); fitted on the warm-up day next to them instead, to see whether those days just differ.
-  DRIVE_FIT: '2026-10-29'
 
 jobs:
-  build:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.reverdict_run == '' }}
+  # ------------------------------------------------------------------------------------------------------------------
+  # PREP: one raw recorded day -> its 15-minute-series records, once, cached on Drive.
+  prep-plan:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prep_days != '' && inputs.sweep_gen == '' }}
     runs-on: ubuntu-latest
-    environment: production
-    timeout-minutes: 340
+    timeout-minutes: 5
+    # contents: write only for the failure comment below: a refused dispatch (prep and prep-report are then skipped) has no other
+    # comment, so the reason is posted here instead of living only in this job's annotations.
     permissions:
       contents: write
     outputs:
-      days: ${{ steps.days.outputs.days }}
-      warm: ${{ steps.days.outputs.warm }}
+      days: ${{ steps.p.outputs.days }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Which days
+        id: p
+        env:
+          PREP_DAYS: ${{ inputs.prep_days }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/plan.log"
+          TODAY=$(date -u +%F)
+          DAYS=""
+          for d in $(printf '%s' "$PREP_DAYS" | tr ',;' '  '); do
+            [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [ "$(date -u -d "$d" +%F 2>/dev/null)" = "$d" ] || twin_fail "prep_days: '$(printf '%.40s' "$d" | tr -c '0-9A-Za-z-' '?')' is not a YYYY-MM-DD day (a calendar day, whole, before today)"
+            [[ "$d" < "$TODAY" ]] || twin_fail "prep_days: $d is not a whole recorded day yet (today is $TODAY UTC)"
+            case " $DAYS " in *" $d "*) ;; *) DAYS="$DAYS $d";; esac
+          done
+          [ -n "$DAYS" ] || twin_fail "prep_days names no day"
+          N=$(echo $DAYS | wc -w)
+          [ "$N" -le 31 ] || twin_fail "at most 31 days per prep dispatch (prep_days names $N)"
+          echo "days=$(printf '%s\n' $DAYS | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+          echo "prep: $N day(s):$DAYS (7 at a time)"
+      # A refused dispatch skips the prep jobs and the prep report, so this is its only commit comment.
+      - name: Report a refused dispatch (commit comment)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "History twin prep plan, run ${{ github.run_id }} (${{ job.status }}), on commit ${GITHUB_SHA:0:8}: no prep ran"; echo; echo '```'
+            if [ -s "$RUNNER_TEMP/plan.log" ]; then cut -c1-300 "$RUNNER_TEMP/plan.log"; else echo "(no [twin] ERROR line: the plan failed before it checked the days; read the run's annotations: gh run view ${{ github.run_id }})"; fi
+            echo '```'; } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
+
+  prep:
+    needs: prep-plan
+    if: ${{ needs.prep-plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        day: ${{ fromJSON(needs.prep-plan.outputs.days) }}
+    env:
+      DAY: ${{ matrix.day }}
+      FORCE: ${{ inputs.force_prep }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -79,97 +289,363 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
-      # Nov 2: the real days from a Kalshi replay check copy plus a Replay fidelity run's fit days (check_copy mode), so no
-      # extra copy of the compared days sits in the 10 GB cache.
-      - name: The real days from a replay check copy (CHECK_COPY)
-        if: env.CHECK_COPY != ''
-        uses: actions/cache/restore@v4
-        with:
-          path: data
-          key: replay-check-copy-${{ env.CHECK_COPY }}
-      - name: Its fit days (Replay fidelity run FIT_RUN)
-        if: env.CHECK_COPY != ''
-        uses: actions/cache/restore@v4
-        with:
-          path: data/fit
-          key: fidelity-fit-${{ env.FIT_RUN }}-1
-      - name: Keep the copy's whole days only
-        if: env.CHECK_COPY != '' && hashFiles('data/recordings/md-*') != ''
-        run: |
-          set -euo pipefail
-          LAST="md-$(cut -c1-10 data/sweeps/check-to.txt 2>/dev/null)"
-          KEEP=$(ls -1 data/recordings | grep -E '^md-[0-9-]{10}\.jsonl' | sort | awk -v l="$LAST" 'substr($0,1,13) < l' | tail -n $((TWIN_DAYS + 1)))
-          for f in data/recordings/*; do echo "$KEEP" | grep -qxF "$(basename "$f")" || rm -f "$f"; done
-          echo "[twin] kept $(ls data/recordings | tr '\n' ' '); fit $(ls data/fit 2>/dev/null | tr '\n' ' ')"
-      # Steven (Nov 2): history lives on Drive. With the check copy evicted, the same days come from the Drive archive.
-      - name: Drive setup (no cached copy)
-        id: drive
-        if: env.CHECK_COPY != '' && hashFiles('data/recordings/md-*') == ''
+      - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
-      - name: The real days and fit days from Drive
-        if: steps.drive.outcome == 'success'
+      # Idempotent: a day Drive already holds with this code's version tag is left alone (unless force_prep).
+      - name: Already on Drive with this version tag?
+        id: have
         run: |
           set -euo pipefail
-          for d in ${DRIVE_DAYS//,/ }; do bash deploy/drive_lab.sh recording "$d" data/recordings; done
-          for d in ${DRIVE_FIT//,/ }; do bash deploy/drive_lab.sh recording "$d" data/fit; done
-          echo "[twin] real days from Drive: $(ls data/recordings | tr '\n' ' '); fit $(ls data/fit | tr '\n' ' ')" | tee -a "$RUNNER_TEMP/build.log"
-      - name: The real days (an earlier Replay fidelity run's copy, or this workflow's own earlier copy)
-        id: real
-        if: env.CHECK_COPY == ''
-        uses: actions/cache/restore@v4
+          source .github/scripts/twin-lib.sh
+          [[ "$DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || twin_fail "bad day"
+          OUT="$RUNNER_TEMP/real15m/$DAY"; mkdir -p "$OUT"
+          rc=0; bash deploy/drive_lab.sh get "derived/twin-real15m/$DAY" "$OUT" --include meta.json || rc=$?
+          { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || twin_fail "prep $DAY: reading derived/twin-real15m/$DAY on Drive failed (rclone exit $rc)"
+          if [ "$FORCE" = true ]; then
+            echo "[twin] prep $DAY: force_prep, prepared again"
+            echo "todo=true" >> "$GITHUB_OUTPUT"
+          else
+            st=0; node --import tsx research/historyTwin.ts --stage prep-status --out "$OUT" --day "$DAY" || st=$?
+            case "$st" in
+              0) echo "todo=false" >> "$GITHUB_OUTPUT";;
+              11) echo "todo=true" >> "$GITHUB_OUTPUT";;
+              *) twin_fail "prep $DAY: prep-status failed (exit $st)";;
+            esac
+          fi
+      - name: The raw day from Drive (recordings/; the compact .mdc form is decoded)
+        if: steps.have.outputs.todo == 'true'
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          rc=0; bash deploy/drive_lab.sh recording "$DAY" "$RUNNER_TEMP/raw" || rc=$?
+          [ "$rc" -ne 3 ] || twin_fail "prep $DAY: no recording for $DAY on Drive (recordings/md-$DAY.jsonl.gz or .mdc)"
+          [ "$rc" -eq 0 ] || twin_fail "prep $DAY: pulling the recording of $DAY failed (exit $rc)"
+          echo "[twin] raw $DAY pulled: $(du -m "$RUNNER_TEMP/raw/md-$DAY.jsonl.gz" | cut -f1) MB gz"
+      - name: Reduce it to the 15-minute-series records (one pass over the day)
+        if: steps.have.outputs.todo == 'true'
+        run: |
+          set -euo pipefail
+          node --import tsx research/historyTwin.ts --stage prep --raw "$RUNNER_TEMP/raw" --day "$DAY" --out "$RUNNER_TEMP/real15m/$DAY"
+      # The day file first, meta.json last: meta.json is the mark that the day is done.
+      - name: Keep it on Drive (derived/twin-real15m; copy only)
+        if: steps.have.outputs.todo == 'true'
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          D="$RUNNER_TEMP/real15m/$DAY"
+          [ -s "$D/md-$DAY.jsonl.gz" ] && [ -s "$D/meta.json" ] || twin_fail "prep $DAY: the prep left no day file"
+          bash deploy/drive_lab.sh put "derived/twin-real15m/$DAY" "$D" --include "md-$DAY.jsonl.gz"
+          bash deploy/drive_lab.sh put "derived/twin-real15m/$DAY" "$D" --include meta.json
+
+  # One commit comment for the whole prep: each day's commit mark (meta.json) on Drive, DONE or NOT DONE. The prep jobs run in
+  # parallel and cannot hand their lines to one job, but the mark each leaves is the day's own record, so this reads Drive
+  # (a day with no mark, or one made by another version, is not done whatever its job log says). A day whose prep job failed
+  # also says WHICH STEP failed (read from this run's jobs: actions: read), because the job's own reason is only in its
+  # annotations (gh run view RUN). One more job, after the prep matrix is over: never beside it.
+  prep-report:
+    needs: [prep-plan, prep]
+    if: ${{ always() && needs.prep-plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
         with:
           path: |
-            data/recordings
-            data/fit
-            data/models
-          key: fidelity-data-${{ inputs.reuse_run || '41351064742' }}-1
-          restore-keys: |
-            twin-real-
-            fidelity-data-
-      - name: Copy the real days from the server (only with the copy slot)
-        if: env.CHECK_COPY == '' && steps.real.outputs.cache-matched-key == '' && env.SERVER_COPY == 'yes'
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Each day's commit mark from Drive, and the report (commit comment)
         env:
-          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
-          HOST: ${{ secrets.LIGHTSAIL_HOST }}
-          USER_NAME: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
-          PORT: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+          DAYS: ${{ needs.prep-plan.outputs.days }}
+          PREP_RESULT: ${{ needs.prep.result }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
-          printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
-          TODAY=$(date -u +%F)
-          ALL=$(ssh bot "cd ~/bot/data/recordings && ls -1 md-*.jsonl*" | sort | awk -v t="md-$TODAY" '$0 < t')
-          echo "$ALL" | tail -n 5 > "$RUNNER_TEMP/rec.txt"; echo "$ALL" | head -n -5 | tail -n 3 > "$RUNNER_TEMP/fit.txt"
-          mkdir -p data/recordings data/fit data/models
-          rsync -a --bwlimit=8000 --rsync-path="nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/rec.txt" bot:bot/data/recordings/ data/recordings/
-          rsync -a --bwlimit=8000 --rsync-path="nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/fit.txt" bot:bot/data/recordings/ data/fit/
-          for f in model.json vol_model.json fill_model.json; do rsync -a --bwlimit=8000 --rsync-path="nice -n 19 rsync" "bot:bot/data/models/$f" data/models/ 2>/dev/null || echo "$f: not on the server"; done
-          echo "copied $(ls data/recordings | wc -l) day(s), $(ls data/fit | wc -l) fit day(s), $(du -sm data | cut -f1) MB"
-      - name: Keep the copy for later runs
-        if: env.CHECK_COPY == '' && steps.real.outputs.cache-matched-key == '' && env.SERVER_COPY == 'yes'
-        uses: actions/cache/save@v4
+          set -uo pipefail
+          source .github/scripts/twin-lib.sh
+          LIST=$(printf '%s' "$DAYS" | jq -r 'join(",")')
+          T="$RUNNER_TEMP/marks"
+          for d in ${LIST//,/ }; do
+            mkdir -p "$T/$d"
+            rc=0; bash deploy/drive_lab.sh get "derived/twin-real15m/$d" "$T/$d" --include meta.json || rc=$?
+            { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || echo "[twin] could not read the commit mark of $d on Drive (rclone exit $rc)"
+          done
+          # Where each failed day stopped: the job is named 'prep (DAY)'; the first failed step is its name. Never fails the report.
+          twin_failed_steps "${{ github.run_id }}" "${{ github.repository }}" '^prep \(' | sed -nE 's/^[^\t]*([0-9]{4}-[0-9]{2}-[0-9]{2})[^\t]*\t(.*)$/\1\t\2/p' > "$RUNNER_TEMP/failed-steps.tsv" || true
+          node --import tsx research/historyTwin.ts --stage prep-report --dir "$T" --days "$LIST" --failed "$RUNNER_TEMP/failed-steps.tsv" 2>&1 | tee "$RUNNER_TEMP/prep.log"
+          { echo "History twin prep, run ${{ github.run_id }} (prep jobs: $PREP_RESULT), on commit ${GITHUB_SHA:0:8}"; echo; echo '```'; cat "$RUNNER_TEMP/prep.log"; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
+
+  # ------------------------------------------------------------------------------------------------------------------
+  # BUILD: the twin side of the judged days, judged against the cached real days.
+  build:
+    if: ${{ github.event_name != 'workflow_dispatch' || (inputs.prep_days == '' && inputs.reverdict_run == '' && inputs.sweep_gen == '') }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 340
+    env:
+      # The job's time budget (round S1; twin_budgeted in .github/scripts/twin-lib.sh): the limit above (a test holds the two numbers equal) and the minutes kept
+      # for what must still run after the match, fill and features commands (the cache saves, the Drive put, the report). A heavy command is run under `timeout`
+      # with what is left of the limit at the moment it starts, less this reserve, so a slow run is cut by its own step and still reports (P2 was cancelled by the
+      # job limit and lost its log, its caches and its Drive copy).
+      TWIN_JOB_LIMIT_MIN: '340'
+      TWIN_RESERVE_MIN: '25'
+    permissions:
+      contents: write
+    outputs:
+      days: ${{ steps.split.outputs.judge }}
+      split: ${{ steps.split.outputs.name }}
+      look: ${{ steps.look.outputs.n }}
+      fast: ${{ steps.split.outputs.fast }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: The job's clock (the fast run prints the seconds of each step)
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
         with:
           path: |
-            data/recordings
-            data/fit
-            data/models
-          key: twin-real-${{ github.run_id }}
-      - name: Real days present?
-        run: |
-          { [ -f data/models/model.json ] || [ "${{ github.event_name }}" = push ] || [ -n "$CHECK_COPY" ]; } && [ "$(ls data/recordings 2>/dev/null | wc -l)" -ge 2 ] || { echo "[twin] no cached copy of real days (evicted); needs the server copy slot (SERVER_COPY=yes)" | tee -a "$RUNNER_TEMP/build.log"; exit 1; }
-          echo "[twin] real days from ${{ steps.real.outputs.cache-matched-key || 'the check copy, Drive or a server copy' }}: $(ls data/recordings | tr '\n' ' ')" | tee -a "$RUNNER_TEMP/build.log"
-      - name: Which days
-        id: days
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      # The pre-registered splits (BRIEF.md), spelled out here and held to research/historyTwin.ts SPLITS by a test. A fit day
+      # is never a judged day: asserted here, again by `--stage split`, and by every stage that reads the days. The CONFIRM days
+      # are held out: only split=confirm may name them (as fit, judged or warm-up days), and it needs its look note: both are
+      # checked here, before any day is pulled, and again by the stages (assertHeldOut, isBlind, the verdict's look check).
+      - name: The split (fit days and judged days; they must never overlap; the confirm days are held out)
+        id: split
+        env:
+          SPLIT: ${{ inputs.split || 'dev' }}
+          FIT_IN: ${{ inputs.fit_days }}
+          JUDGE_IN: ${{ inputs.judge_days }}
+          WARM_IN: ${{ inputs.warm_day }}
+          NOTE: ${{ inputs.confirm_look_note }}
+          BACKTESTS: ${{ inputs.backtests }}
+          MODEL_DRIVE: ${{ inputs.model_drive }}
+          DEPTH_PARAMS_RUN: ${{ inputs.depth_params_run }}
+          FAST: ${{ inputs.fast }}
+          REAL_FEATURES_RUN: ${{ inputs.real_features_run }}
+          DEPTH_MODEL_RUN: ${{ inputs.depth_model_run }}
+          LAG_ARMS: ${{ inputs.lag_arms }}
+          PROBE: ${{ inputs.probe }}
+          PROBE_DAYS: ${{ inputs.probe_days }}
         run: |
           set -euo pipefail
-          ALL=$(ls -1 data/recordings | sed -E 's/^md-([0-9-]{10}).*/\1/' | sort -u)
-          WARM=$(echo "$ALL" | head -1); DAYS=$(echo "$ALL" | tail -n +2 | paste -sd, -)
-          echo "days=$DAYS" >> "$GITHUB_OUTPUT"; echo "warm=$WARM" >> "$GITHUB_OUTPUT"
-          echo "warm-up $WARM, compared $DAYS; depth model fitted on $(ls data/fit | sed -E 's/^md-([0-9-]{10}).*/\1/' | paste -sd' ' -)"
-      - name: Restore the Kalshi history and its replay
+          source .github/scripts/twin-lib.sh
+          CONFIRM=2026-11-18,2026-11-19,2026-11-20
+          WARM_IN=$(printf '%s' "$WARM_IN" | tr -d ' ')
+          case "$SPLIT" in
+            dev)
+              FIT=2026-11-11,2026-11-12,2026-11-15
+              JUDGE=2026-11-13,2026-11-14,2026-11-16,2026-11-17;;
+            confirm)
+              FIT=2026-11-11,2026-11-12,2026-11-15,2026-11-13,2026-11-14,2026-11-16,2026-11-17
+              JUDGE=2026-11-18,2026-11-19,2026-11-20;;
+            custom)
+              FIT=$(printf '%s' "$FIT_IN" | tr -d ' ')
+              JUDGE=$(printf '%s' "$JUDGE_IN" | tr -d ' ');;
+            *) twin_fail "split must be dev, confirm or custom";;
+          esac
+          [ "$SPLIT" = custom ] || [ -z "$FIT_IN$JUDGE_IN" ] || echo "::warning::fit_days and judge_days are ignored unless split=custom"
+          # A sweep's params go into dev and custom dispatches only: the confirm run uses the code defaults (promote the winners through a reviewed change first).
+          [ -z "${DEPTH_PARAMS_RUN:-}" ] || [ "$SPLIT" != confirm ] || twin_fail "depth_params_run is for dev and custom dispatches: split=confirm uses the code defaults, so promote the sweep's params to the defaults through a reviewed code change first"
+          [ -z "${DEPTH_PARAMS_RUN:-}" ] || [[ "$DEPTH_PARAMS_RUN" =~ ^[0-9]+$ ]] || twin_fail "depth_params_run must be a run id (digits only)"
+          # The fast dev run (RUNBOOK 3.2.1): dev and custom only (the confirm route stays the audited full one); it writes no filled day, so it has no
+          # backtest legs and no lag arms; its two reuse inputs are fast only and are run ids before they can reach a Drive path.
+          [ "${FAST:-}" = true ] || FAST=false
+          if [ "$FAST" = true ]; then
+            [ "$SPLIT" != confirm ] || twin_fail "fast=true is for split dev or custom only: the confirm split stays on the audited full path (leave fast off for split=confirm)"
+            [ "${BACKTESTS:-}" != true ] || twin_fail "fast=true cannot run the backtest legs (it writes no filled day for them to read): leave backtests off, or leave fast off"
+            [ "${LAG_ARMS:-}" != true ] || twin_fail "fast=true does not build the lag arms: leave lag_arms off, or leave fast off"
+          else
+            [ -z "${REAL_FEATURES_RUN:-}" ] && [ -z "${DEPTH_MODEL_RUN:-}" ] || twin_fail "real_features_run and depth_model_run are for fast=true runs only: set fast=true, or leave them empty"
+          fi
+          [ -z "${REAL_FEATURES_RUN:-}" ] || [[ "$REAL_FEATURES_RUN" =~ ^[0-9]+$ ]] || twin_fail "real_features_run must be a run id (digits only)"
+          [ -z "${DEPTH_MODEL_RUN:-}" ] || [[ "$DEPTH_MODEL_RUN" =~ ^[0-9]+$ ]] || twin_fail "depth_model_run must be a run id (digits only)"
+          [ -n "$FIT" ] && [ -n "$JUDGE" ] || twin_fail "split $SPLIT needs fit days and judged days (custom: fit_days and judge_days)"
+          for d in ${FIT//,/ } ${JUDGE//,/ } ${WARM_IN//,/ }; do
+            [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [ "$(date -u -d "$d" +%F 2>/dev/null)" = "$d" ] || twin_fail "'$d' is not a YYYY-MM-DD day"
+          done
+          for j in ${JUDGE//,/ }; do
+            case ",$FIT," in *",$j,"*) twin_fail "fit days and judged days overlap: $j is in both";; esac
+          done
+          # The confirm days are held out: a dev or custom split may not fit, judge or warm up on them (they would print the full
+          # tables and number no look).
+          if [ "$SPLIT" != confirm ]; then
+            for d in ${FIT//,/ } ${JUDGE//,/ } ${WARM_IN//,/ }; do
+              case ",$CONFIRM," in *",$d,"*) twin_fail "the confirm days ($CONFIRM) are read only through split=confirm with a confirm_look_note: $d cannot be a fit, judged or warm-up day of a $SPLIT split";; esac
+            done
+          fi
+          # Leave-one-day-out needs a day to hold out and days left to train on: with one judged day no fold runs and the AUC is a flat 0.500.
+          if [ "$SPLIT" = custom ]; then
+            NJ=$(printf '%s\n' ${JUDGE//,/ } | sort -u | wc -l)
+            [ "$NJ" -ge 2 ] || twin_fail "split custom: leave-one-day-out needs at least 2 judged days (3 or more recommended), got $NJ: with one judged day no fold runs and the AUC is a flat 0.500"
+          fi
+          # Every look at the confirm days is numbered and logged: no note, no run (checked before any day is pulled).
+          if [ "$SPLIT" = confirm ]; then
+            CLEAN=$(printf '%s' "$NOTE" | tr '\000-\037\177' ' ' | sed -E 's/^ +//; s/ +$//')
+            [ -n "$CLEAN" ] || twin_fail "split=confirm needs confirm_look_note (empty or only control characters): every look at the confirm days is numbered and logged on Drive"
+          elif [ -n "$NOTE" ]; then echo "::warning::confirm_look_note is ignored unless split=confirm"
+          fi
+          # The entry-state probe (R3b, REPORT ONLY; RUNBOOK 3.2.1): a fast dev or custom step, never a confirm run and never with the backtest legs or the lag arms (like fast); it prices
+          # with the decision model, so it needs model_drive; its days are fit or judged days of this split (those are the cached real days), never a confirm day.
+          [ "${PROBE:-}" = true ] || PROBE=false
+          if [ "$PROBE" = true ]; then
+            [ "$SPLIT" != confirm ] || twin_fail "probe=true is for split dev or custom only: the confirm split stays on the audited full path (leave probe off for split=confirm)"
+            [ "${BACKTESTS:-}" != true ] || twin_fail "probe=true cannot run with the backtest legs (it is a fast-route step that reads no backtest outcome): leave backtests off, or leave probe off"
+            [ "${LAG_ARMS:-}" != true ] || twin_fail "probe=true does not run with the lag arms: leave lag_arms off, or leave probe off"
+            [ "$FAST" = true ] || twin_fail "probe=true is for fast=true runs only: set fast=true, or leave probe off"
+            [ -n "${MODEL_DRIVE:-}" ] || twin_fail "probe=true needs model_drive (a folder under models/ on Drive with model.json): the probe prices with the decision model"
+            PD=$(printf '%s' "${PROBE_DAYS:-}" | tr -d ' ')
+            for d in ${PD//,/ }; do
+              [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [ "$(date -u -d "$d" +%F 2>/dev/null)" = "$d" ] || twin_fail "probe_days: '$d' is not a YYYY-MM-DD day"
+              case ",$CONFIRM," in *",$d,"*) twin_fail "probe_days: $d is a confirm day ($CONFIRM): the probe never reads a confirm day";; esac
+              case ",$FIT,$JUDGE," in *",$d,"*) ;; *) twin_fail "probe_days: $d is neither a fit day nor a judged day of this split ($FIT | $JUDGE): only those days are cached";; esac
+            done
+            # a FIT day's requote day is in the build only when this run fits the depth model (data/replay-fit); with depth_model_run it is read from Drive only at this code's replay version, else left out
+            if [ -n "${DEPTH_MODEL_RUN:-}" ]; then
+              for d in ${PD//,/ }; do
+                case ",$FIT," in *",$d,"*) echo "::warning::probe_days has a FIT day and depth_model_run is set: a FIT day's requote day is then read from Drive only when its replay manifest version equals this code's REPLAY_VERSION, else it is left out and the probe writes no file for it. Omit depth_model_run to fit here and keep the FIT requote days (RUNBOOK 3.2.1)"; break;; esac
+              done
+            fi
+          elif [ -n "${PROBE_DAYS:-}" ]; then echo "::warning::probe_days is ignored unless probe=true"
+          fi
+          # Warm-up days only matter to the backtests (a judged day starts from the day before it): the day before each judged
+          # day that is not itself judged, or warm_day when given. The next step keeps those that are cached.
+          WARM=""
+          if [ "$BACKTESTS" = true ]; then
+            [ -n "$MODEL_DRIVE" ] || twin_fail "backtests=true needs model_drive (a folder under models/ on Drive with model.json)"
+            if [ -n "$WARM_IN" ]; then
+              for w in ${WARM_IN//,/ }; do case ",$JUDGE," in *",$w,"*) ;; *) WARM="${WARM:+$WARM,}$w";; esac; done
+            else
+              for j in ${JUDGE//,/ }; do
+                p=$(date -u -d "$j - 1 day" +%F)
+                case ",$JUDGE,$WARM," in *",$p,"*) ;; *) WARM="${WARM:+$WARM,}$p";; esac
+              done
+            fi
+          fi
+          { echo "name=$SPLIT"; echo "fit=$FIT"; echo "judge=$JUDGE"; echo "warm=$WARM"; echo "fast=$FAST"; } >> "$GITHUB_OUTPUT"
+          echo "[twin] split input $SPLIT: $(echo "${FIT//,/ }" | wc -w) fit day(s), $(echo "${JUDGE//,/ }" | wc -w) judged day(s), warm-up for backtests: ${WARM:-none}" | tee -a "$RUNNER_TEMP/build.log"
+          if [ "$FAST" = true ]; then
+            R="built from the real days"; [ -z "${REAL_FEATURES_RUN:-}" ] || R="reused from run $REAL_FEATURES_RUN"
+            M="fitted here"; [ -z "${DEPTH_MODEL_RUN:-}" ] || M="reused from run $DEPTH_MODEL_RUN"
+            echo "[twin] fast run: no filled day is written; real rows $R, depth model $M" | tee -a "$RUNNER_TEMP/build.log"
+          fi
+          if [ "$PROBE" = true ]; then
+            NP=$(printf '%s\n' ${PD//,/ } | grep -c . || true); [ "$NP" -gt 0 ] || NP=$(printf '%s\n' ${JUDGE//,/ } | grep -c .)
+            echo "[twin] probe requested: the entry-state probe (report only) runs after the fast rows on $NP day(s)" | tee -a "$RUNNER_TEMP/build.log"
+          fi
+      - name: Drive setup
+        id: drive
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      # Real days come ONLY from the Drive cache the prep made. A fit or judged day that is missing fails the run here, naming
+      # the days and the prep input; a warm-up day that is missing is dropped (the backtest of the day after it starts cold),
+      # unless it was asked for with warm_day.
+      - name: The real 15-minute days from Drive (derived/twin-real15m)
+        id: real
+        env:
+          FIT: ${{ steps.split.outputs.fit }}
+          JUDGE: ${{ steps.split.outputs.judge }}
+          WARM: ${{ steps.split.outputs.warm }}
+          WARM_GIVEN: ${{ inputs.warm_day }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          mkdir -p data/twin-real15m
+          # pull DAY: 0 = cached and in place, 3 = not on Drive
+          pull() {
+            local d=$1 T="$RUNNER_TEMP/r15/$1" rc=0
+            mkdir -p "$T"
+            bash deploy/drive_lab.sh get "derived/twin-real15m/$d" "$T" || rc=$?
+            { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || twin_fail "reading derived/twin-real15m/$d on Drive failed (rclone exit $rc)"
+            if [ "$rc" -eq 0 ] && [ -s "$T/md-$d.jsonl.gz" ] && [ -s "$T/meta.json" ]; then
+              mv "$T/md-$d.jsonl.gz" data/twin-real15m/ || twin_fail "could not place the cached day $d"
+              mv "$T/meta.json" "data/twin-real15m/meta-$d.json" || twin_fail "could not place the commit mark of $d"
+              return 0
+            fi
+            return 3
+          }
+          MISSING=""
+          for d in ${FIT//,/ } ${JUDGE//,/ }; do
+            [ ! -s "data/twin-real15m/md-$d.jsonl.gz" ] || continue
+            rc=0; pull "$d" || rc=$?
+            [ "$rc" -eq 0 ] || MISSING="$MISSING $d"
+          done
+          if [ -n "$MISSING" ]; then
+            LIST=$(printf '%s\n' $MISSING | sort -u | paste -sd, -)
+            twin_fail "real 15-minute days missing on Drive (derived/twin-real15m): $LIST. Dispatch this workflow with prep_days=$LIST first, then run it again."
+          fi
+          KEEP=""
+          for d in ${WARM//,/ }; do
+            have=0
+            if [ -s "data/twin-real15m/md-$d.jsonl.gz" ]; then have=1; else rc=0; pull "$d" || rc=$?; [ "$rc" -ne 0 ] || have=1; fi
+            if [ "$have" -eq 1 ]; then KEEP="${KEEP:+$KEEP,}$d"
+            elif [ -n "$WARM_GIVEN" ]; then twin_fail "warm_day $d is not cached on Drive; dispatch prep_days=$d first"
+            else echo "[twin] no cached warm-up day $d: the backtest of the day after it starts cold" | tee -a "$RUNNER_TEMP/build.log"; fi
+          done
+          ALL=$(printf '%s\n' ${FIT//,/ } ${JUDGE//,/ } ${KEEP//,/ } | sort -u | paste -sd, -)
+          { echo "warm=$KEEP"; echo "all=$ALL"; } >> "$GITHUB_OUTPUT"
+          echo "[twin] real 15-minute days from Drive: $(ls data/twin-real15m | grep -c '^md-') day(s), $(du -sm data/twin-real15m | cut -f1) MB" | tee -a "$RUNNER_TEMP/build.log"
+      - name: Check the cached days (version tag) and write the split
+        env:
+          SPLIT: ${{ steps.split.outputs.name }}
+          FIT: ${{ steps.split.outputs.fit }}
+          JUDGE: ${{ steps.split.outputs.judge }}
+          WARM: ${{ steps.real.outputs.warm }}
+          ALL: ${{ steps.real.outputs.all }}
+        run: |
+          set -euo pipefail
+          node --import tsx research/historyTwin.ts --stage real15m-check --dir data/twin-real15m --days "$ALL" 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+          node --import tsx research/historyTwin.ts --stage split --split "$SPLIT" --fit-days "$FIT" --judge-days "$JUDGE" --warm-days "$WARM" --out data/twin 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+      # Requote days: Drive's simulated/kalshi-replay-200d (md-DAY.jsonl.gz ~1.4 MB) while its replay-manifest.json version is
+      # REPLAY_VERSION (research/history/historyReplay.ts); the days it lacks, or all of them on another version, are
+      # regenerated with research/kalshiReplayData.ts. The stage logs which path was used.
+      - name: The requote days (Drive, else regenerated)
+        id: twinsrc
+        env:
+          JUDGE: ${{ steps.split.outputs.judge }}
+          WARM: ${{ steps.real.outputs.warm }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          NEED=$(printf '%s\n' ${JUDGE//,/ } ${WARM//,/ } | sort -u | paste -sd, -)
+          D=data/replay-drive; mkdir -p "$D" data/replay-src
+          ARGS=(--include replay-manifest.json)
+          for d in ${NEED//,/ }; do ARGS+=(--include "md-$d.jsonl.gz"); done
+          rc=0; bash deploy/drive_lab.sh get simulated/kalshi-replay-200d "$D" "${ARGS[@]}" || rc=$?
+          { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || twin_fail "reading simulated/kalshi-replay-200d on Drive failed (rclone exit $rc)"
+          node --import tsx research/historyTwin.ts --stage twin-source --dir "$D" --days "$NEED" --out data/twin 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+          for d in $(tr ',' ' ' < data/twin/drive-days.txt); do cp "$D/md-$d.jsonl.gz" data/replay-src/; done
+          { echo "need=$NEED"; echo "regen=$(cat data/twin/regen-days.txt)"; } >> "$GITHUB_OUTPUT"
+      - name: Restore the Kalshi history and its replay (to regenerate days)
+        if: ${{ steps.twinsrc.outputs.regen != '' || inputs.lag_arms }}
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -177,62 +653,519 @@ jobs:
             data/history-replay
           key: kalshi-replay-twin-${{ github.run_id }}
           restore-keys: kalshi-replay-
-      - name: The deep-history twin of those days (Binance + Kalshi public history, the deep history's own pipeline)
+      - name: Regenerate the requote days Drive lacks (Binance + Kalshi public history, the deep history's own pipeline)
+        if: ${{ steps.twinsrc.outputs.regen != '' }}
         env:
-          WARM: ${{ steps.days.outputs.warm }}
+          REGEN: ${{ steps.twinsrc.outputs.regen }}
         run: |
           set -euo pipefail
-          BACK=$(( ( $(date -u +%s) - $(date -u -d "$WARM" +%s) ) / 86400 + 2 ))
+          source .github/scripts/twin-lib.sh
+          FIRST=$(printf '%s\n' ${REGEN//,/ } | sort | head -1)
+          BACK=$(( ( $(date -u +%s) - $(date -u -d "$FIRST" +%s) ) / 86400 + 2 ))
           node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$BACK" --budget-min 120 2>&1 | tee -a "$RUNNER_TEMP/build.log" \
             | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -20
-      - name: The same twin with the quote lagging the index (the SNN thread's fit, Oct 24-31)
+          for d in ${REGEN//,/ }; do
+            [ -s "data/history-replay/md-$d.jsonl.gz" ] || twin_fail "the regenerated replay has no day $d (Binance + Kalshi public history did not cover it within the 120-minute budget)"
+            cp "data/history-replay/md-$d.jsonl.gz" data/replay-src/
+          done
+          echo "[twin] requote days regenerated: $(echo "${REGEN//,/ }" | wc -w) day(s)" | tee -a "$RUNNER_TEMP/build.log"
+      - name: The same twin with the quote lagging the index (lag arms; only with lag_arms)
+        if: ${{ inputs.lag_arms }}
         env:
-          WARM: ${{ steps.days.outputs.warm }}
+          NEED: ${{ steps.twinsrc.outputs.need }}
         run: |
-          BACK=$(( ( $(date -u +%s) - $(date -u -d "$WARM" +%s) ) / 86400 + 2 ))
+          set -euo pipefail
+          FIRST=$(printf '%s\n' ${NEED//,/ } | sort | head -1)
+          BACK=$(( ( $(date -u +%s) - $(date -u -d "$FIRST" +%s) ) / 86400 + 2 ))
           node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay-lag --days "$BACK" --budget-min 30 --requote-lag 0.29/3.9 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E 'replay: .*written|day\(s\) with' | tail -3
       - name: Save the Kalshi history and its replay
-        if: always() && github.event_name == 'workflow_dispatch'
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && (steps.twinsrc.outputs.regen != '' || inputs.lag_arms) }}
         uses: actions/cache/save@v4
         with:
           path: |
             data/history
             data/history-replay
           key: kalshi-replay-twin-${{ github.run_id }}
-      - name: Match, fill in, and describe every contract both ways
+      # The depth model is fitted on the FIT days only (the cached, restricted real days), 15-minute contracts only; the
+      # fill stage then asserts the model's own record of its days against the split.
+      - name: The depth model, fitted on the FIT days only
+        if: ${{ steps.split.outputs.fast != 'true' || inputs.depth_model_run == '' }}
         env:
-          DAYS: ${{ steps.days.outputs.days }}
-          WARM: ${{ steps.days.outputs.warm }}
+          FIT: ${{ steps.split.outputs.fit }}
+          FAST: ${{ steps.split.outputs.fast }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          FIT_T0=$(date +%s)
+          mkdir -p data/fit data/models
+          for d in ${FIT//,/ }; do ln -sf "$GITHUB_WORKSPACE/data/twin-real15m/md-$d.jsonl.gz" data/fit/; done
+          # The whole output goes to a file first: a failed fit (no 15-minute contract on a fit day, out of memory, a bad day list)
+          # leaves its own message in the comment, not just "no depth model".
+          rc=0; node --import tsx research/depthStudy.ts --recordings data/fit --days "$FIT" --series 15m --out data/models/depth_model.json > "$RUNNER_TEMP/depth.log" 2>&1 || rc=$?
+          grep -E '^\[depth\]| n=' "$RUNNER_TEMP/depth.log" | sed -E 's/^\[depth\]/[twin] depth model:/; s/^  /[twin] depth cell: /' | cut -c1-420 | head -70 | tee -a "$RUNNER_TEMP/build.log" || true
+          if [ "$rc" -ne 0 ] || [ ! -s data/models/depth_model.json ]; then
+            twin_fail "depth fit failed (exit $rc) on the fit days $FIT; last lines: $(tail -8 "$RUNNER_TEMP/depth.log" | cut -c1-200 | tr '\n' '|'). Check the fit days' 15-minute contract counts in their '[twin] prep DAY' lines"
+          fi
+          if [ "${FAST:-}" = true ]; then
+            echo "[twin] fast: set-up $(( FIT_T0 - ${JOB_START:-$FIT_T0} )) s" | tee -a "$RUNNER_TEMP/build.log"
+            echo "[twin] fast: depth model fitted $(( $(date +%s) - FIT_T0 )) s" | tee -a "$RUNNER_TEMP/build.log"
+          fi
+      # A depth model an earlier run fitted (fast only): copy-only Drive read of that run's models folder, then the stage refuses it unless it
+      # records exactly these fit days and the current study version (DEPTH_MODEL_SCHEMA); the real-meta.json of that run, when it has one, also
+      # says which real days' tag it was fitted from. The run id is digits only before it reaches the path.
+      - name: The depth model, reused from an earlier run (depth_model_run)
+        if: ${{ steps.split.outputs.fast == 'true' && inputs.depth_model_run != '' }}
+        env:
+          RUN: ${{ inputs.depth_model_run }}
+          FAST: ${{ steps.split.outputs.fast }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "depth_model_run must be a run id (digits only)"
+          REUSE_T0=$(date +%s)
+          mkdir -p data/models data/model-src data/model-meta
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/models" data/model-src --include depth_model.json || rc=$?
+          [ "$rc" -ne 3 ] || twin_fail "depth_model_run $RUN: no depth model on Drive (simulated/history-twin/$RUN/models): is it the run id of a build that finished its Drive step?"
+          [ "$rc" -eq 0 ] || twin_fail "depth_model_run $RUN: reading simulated/history-twin/$RUN/models on Drive failed (rclone exit $rc)"
+          [ -s data/model-src/depth_model.json ] || twin_fail "depth_model_run $RUN: no depth_model.json in simulated/history-twin/$RUN/models"
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/model-meta --include real-meta.json || rc=$?
+          { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || twin_fail "depth_model_run $RUN: reading simulated/history-twin/$RUN/twinlite on Drive failed (rclone exit $rc)"
+          META=(); [ ! -s data/model-meta/real-meta.json ] || META=(--model-meta data/model-meta/real-meta.json)
+          node --import tsx research/historyTwin.ts --stage depth-model-check --depth-model data/model-src/depth_model.json --split-file data/twin/split.json --run "$RUN" "${META[@]}" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
+          cp data/model-src/depth_model.json data/models/depth_model.json
+          echo "[twin] fast: set-up $(( REUSE_T0 - ${JOB_START:-$REUSE_T0} )) s" | tee -a "$RUNNER_TEMP/build.log"
+          echo "[twin] fast: depth model reused $(( $(date +%s) - REUSE_T0 )) s" | tee -a "$RUNNER_TEMP/build.log"
+      # The real side of an earlier run (fast only): copy-only Drive read of its twinlite files. The fast stage refuses them unless they were built
+      # for exactly these days, prepped real days, requote days and feature code, and says so for an old run that kept no real-meta.json.
+      - name: The real side of an earlier run (real_features_run)
+        if: ${{ steps.split.outputs.fast == 'true' && inputs.real_features_run != '' }}
+        env:
+          RUN: ${{ inputs.real_features_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "real_features_run must be a run id (digits only)"
+          mkdir -p data/real-cache
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/real-cache --include features-real.json --include real-meta.json --include real-activity.json --include real-fit-features.json --include paired.json || rc=$?
+          [ "$rc" -ne 3 ] || twin_fail "real_features_run $RUN: no judged features on Drive (simulated/history-twin/$RUN/twinlite): is it the run id of a build that finished its Drive step?"
+          [ "$rc" -eq 0 ] || twin_fail "real_features_run $RUN: reading simulated/history-twin/$RUN/twinlite on Drive failed (rclone exit $rc)"
+          echo "[twin] real side of run $RUN read from Drive: $(ls data/real-cache | wc -l) file(s)" | tee -a "$RUNNER_TEMP/build.log"
+      - name: The decision model for the backtests (Drive models/)
+        if: ${{ inputs.backtests }}
+        env:
+          MODEL_DRIVE: ${{ inputs.model_drive }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          [[ "$MODEL_DRIVE" =~ ^[A-Za-z0-9._/-]+$ && "$MODEL_DRIVE" != *..* ]] || twin_fail "model_drive must be a folder name under models/"
+          bash deploy/drive_lab.sh get "models/$MODEL_DRIVE" data/models || twin_fail "models/$MODEL_DRIVE is not on Drive"
+          [ -s data/models/model.json ] || twin_fail "models/$MODEL_DRIVE has no model.json"
+          echo "[twin] decision model from Drive models/$MODEL_DRIVE: $(ls data/models | tr '\n' ' ')" | tee -a "$RUNNER_TEMP/build.log"
+      # A sweep's best candidate (depth_params_run; dev and custom only, the split step refuses it on confirm): its params go into the
+      # depth fill-in below, which logs every parameter it used. A best.json must be a sweep's, made on the FIT days only (the fill
+      # stage checks the file itself).
+      - name: The depth simulator parameters of a sweep (depth_params_run)
+        if: ${{ inputs.depth_params_run != '' }}
+        env:
+          RUN: ${{ inputs.depth_params_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "depth_params_run must be a run id (digits only)"
+          mkdir -p data/sweep
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin-sweep/$RUN" data/sweep --include best.json || rc=$?
+          [ "$rc" -ne 3 ] || twin_fail "depth_params_run $RUN: no sweep on Drive (simulated/history-twin-sweep/$RUN): is it the run id of a sweep whose collect job finished?"
+          [ "$rc" -eq 0 ] || twin_fail "depth_params_run $RUN: reading simulated/history-twin-sweep/$RUN on Drive failed (rclone exit $rc)"
+          [ -s data/sweep/best.json ] || twin_fail "depth_params_run $RUN: no best.json in simulated/history-twin-sweep/$RUN (the sweep's collect job did not finish)"
+          echo "[twin] depth params from sweep run $RUN (best.json read from Drive)" | tee -a "$RUNNER_TEMP/build.log"
+      # THE PER-ASSET CALIBRATION (round R2; RUNBOOK 4.2). Wherever the depth model was fitted in THIS job (every full run, the confirm refit on FIT+DEV
+      # included, and a fast run without depth_model_run) it is calibrated right after the fit, on the FIT days only: first their requote days (Drive's
+      # simulated/kalshi-replay-200d while its manifest is REPLAY_VERSION, else regenerated, as for the judged days), kept in data/replay-fit and NOT in
+      # data/replay-src (the match stage keeps the tickers of the day before a judged day that sit in replay-src: a FIT day there would change which real
+      # contracts a judged day keeps), then the calibrate stage. All of it runs before the confirm look is numbered, so a failure here burns no number.
+      - name: The requote FIT days for the calibration (Drive, else regenerated)
+        id: fitsrc
+        if: ${{ steps.split.outputs.fast != 'true' || inputs.depth_model_run == '' }}
+        env:
+          FIT: ${{ steps.split.outputs.fit }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          D=data/replay-fit-drive; mkdir -p "$D" data/replay-fit data/calib
+          ARGS=(--include replay-manifest.json)
+          for d in ${FIT//,/ }; do ARGS+=(--include "md-$d.jsonl.gz"); done
+          rc=0; bash deploy/drive_lab.sh get simulated/kalshi-replay-200d "$D" "${ARGS[@]}" || rc=$?
+          { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || twin_fail "reading simulated/kalshi-replay-200d on Drive failed (rclone exit $rc)"
+          node --import tsx research/historyTwin.ts --stage twin-source --dir "$D" --days "$FIT" --out data/calib 2>&1 | sed -E 's/^\[twin\] requote source:/[twin] calibration: requote FIT days:/' | tee -a "$RUNNER_TEMP/build.log"
+          for d in $(tr ',' ' ' < data/calib/drive-days.txt); do cp "$D/md-$d.jsonl.gz" data/replay-fit/; done
+          echo "regen=$(cat data/calib/regen-days.txt)" >> "$GITHUB_OUTPUT"
+      - name: Restore the Kalshi history and its replay (to regenerate FIT days)
+        if: ${{ steps.fitsrc.outputs.regen != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/history
+            data/history-replay
+          key: kalshi-replay-fit-${{ github.run_id }}
+          restore-keys: kalshi-replay-
+      - name: Regenerate the requote FIT days Drive lacks (Binance + Kalshi public history, the deep history's own pipeline)
+        if: ${{ steps.fitsrc.outputs.regen != '' }}
+        env:
+          REGEN: ${{ steps.fitsrc.outputs.regen }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          FIRST=$(printf '%s\n' ${REGEN//,/ } | sort | head -1)
+          BACK=$(( ( $(date -u +%s) - $(date -u -d "$FIRST" +%s) ) / 86400 + 2 ))
+          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$BACK" --budget-min 120 2>&1 | tee -a "$RUNNER_TEMP/build.log" \
+            | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -20
+          for d in ${REGEN//,/ }; do
+            [ -s "data/history-replay/md-$d.jsonl.gz" ] || twin_fail "the regenerated replay has no FIT day $d (Binance + Kalshi public history did not cover it within the 120-minute budget)"
+            cp "data/history-replay/md-$d.jsonl.gz" data/replay-fit/
+          done
+          echo "[twin] calibration: requote FIT days regenerated: $(echo "${REGEN//,/ }" | wc -w) day(s)" | tee -a "$RUNNER_TEMP/build.log"
+      - name: Save the Kalshi history and its replay (FIT days)
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && steps.fitsrc.outputs.regen != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/history
+            data/history-replay
+          key: kalshi-replay-fit-${{ github.run_id }}
+      # The calibration itself: one stage, the model file rewritten in place with its `calibration` block. Its whole output goes to a file first; a failure
+      # keeps the (uncalibrated) model as depth_model.uncalibrated.json, so the folder this run keeps on Drive holds no model that a later depth_model_run
+      # could reuse without its calibration (the reuse step below refuses one anyway).
+      - name: The depth model's per-asset calibration (fitted on the FIT days only)
+        if: ${{ steps.split.outputs.fast != 'true' || inputs.depth_model_run == '' }}
+        env:
+          FAST: ${{ steps.split.outputs.fast }}
+          REAL_FEATURES_RUN: ${{ inputs.real_features_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          CAL_T0=$(date +%s)
+          RC=(); [ -z "${REAL_FEATURES_RUN:-}" ] || RC=(--real-cache data/real-cache --real-run "$REAL_FEATURES_RUN")
+          mkdir -p data/calib
+          rc=0; node --import tsx research/historyTwin.ts --stage calibrate --depth-model data/models/depth_model.json --split-file data/twin/split.json --real data/twin-real15m --twin-fit data/replay-fit --out data/calib "${RC[@]}" > "$RUNNER_TEMP/calibrate.log" 2>&1 || rc=$?
+          grep -E '^\[twin\]|Error' "$RUNNER_TEMP/calibrate.log" | cut -c1-400 | tee -a "$RUNNER_TEMP/build.log" || true
+          if [ "$rc" -ne 0 ]; then
+            [ ! -f data/models/depth_model.json ] || mv data/models/depth_model.json data/models/depth_model.uncalibrated.json
+            twin_fail "the per-asset calibration failed (exit $rc); last lines: $(tail -4 "$RUNNER_TEMP/calibrate.log" | cut -c1-200 | tr '\n' '|'). The depth model is kept as depth_model.uncalibrated.json, never as a model to reuse"
+          fi
+          if [ "${FAST:-}" = true ]; then echo "[twin] fast: calibration $(( $(date +%s) - CAL_T0 )) s" | tee -a "$RUNNER_TEMP/build.log"; fi
+      # A reused model (depth_model_run) is not calibrated again: it carries its calibration, which is checked here (its days, its block, and the code stamp of the
+      # block against this ref's: a calibration fitted by other simulator source, requote layer or feature code is refused): a model with none is refused.
+      - name: The reused depth model's calibration (carried by the model; checked, not refitted)
+        if: ${{ steps.split.outputs.fast == 'true' && inputs.depth_model_run != '' }}
+        env:
+          RUN: ${{ inputs.depth_model_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "depth_model_run must be a run id (digits only)"
+          node --import tsx research/historyTwin.ts --stage calibration-check --depth-model data/models/depth_model.json --split-file data/twin/split.json --run "$RUN" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
+      # A confirm look is numbered (the looks already logged on Drive + 1) and logged there, copy only, JUST BEFORE the confirm
+      # days are read (the match stage): a build that fails earlier (a missing day, the depth fit) burns no number. A failure
+      # after this step still used its number: write it in the round file as "look #n, no verdict read". The note is required
+      # (the split step already refused a blank one, before any day was pulled). The verdict job prints CONFIRM LOOK #n.
+      - name: Number this confirm look (the confirm days are read from the next step on)
+        id: look
+        env:
+          SPLIT: ${{ steps.split.outputs.name }}
+          NOTE: ${{ inputs.confirm_look_note }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          N=""
+          if [ "$SPLIT" = confirm ]; then
+            rc=0; N=$(bash .github/scripts/twin-look.sh "$NOTE" 2> "$RUNNER_TEMP/look.err") || rc=$?
+            cat "$RUNNER_TEMP/look.err" >&2
+            grep '^\[twin\]' "$RUNNER_TEMP/look.err" >> "$RUNNER_TEMP/build.log" || true
+            { [ "$rc" -eq 0 ] && [ -n "$N" ]; } || twin_fail "the confirm look was not numbered (twin-look.sh exit $rc): the confirm days were not read"
+          fi
+          echo "n=$N" >> "$GITHUB_OUTPUT"
+      - name: Match, fill in, and describe every contract both ways
+        if: ${{ steps.split.outputs.fast != 'true' }}
+        env:
+          SPLIT: ${{ steps.split.outputs.name }}
+          FIT: ${{ steps.split.outputs.fit }}
+          JUDGE: ${{ steps.split.outputs.judge }}
+          WARM: ${{ steps.real.outputs.warm }}
+          NEED: ${{ steps.twinsrc.outputs.need }}
+          LAG: ${{ inputs.lag_arms }}
+          DEPTH_PARAMS_RUN: ${{ inputs.depth_params_run }}
+          # each child process of the match and features stages gets this heap (the job's 12288 per process would not fit four children in the runner's 16 GB)
+          TWIN_CHILD_HEAP_MB: '3072'
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          T=data/twin
+          DP=(); [ -z "${DEPTH_PARAMS_RUN:-}" ] || DP=(--depth-params data/sweep/best.json)
+          # The match and features stages run their day passes in child processes: as many as the runner has cores, at most 4 (--jobs; the files and lines are the serial route's).
+          # Every node command below runs under the job's time budget (twin_budgeted): cut at what is left of the limit less the reserve, with a '[twin] ERROR: ... was cut' line.
+          J=$(nproc); [ "$J" -le 4 ] || J=4; [ "$J" -ge 1 ] || J=1
+          echo "[twin] match from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
+          twin_budgeted match "$J" node --import tsx research/historyTwin.ts --stage match --real data/twin-real15m --twin data/replay-src --days "$JUDGE" --warm-days "$WARM" --jobs "$J" --out $T
+          twin_budgeted fill 1 node --import tsx research/historyTwin.ts --stage fill --src $T/requote --dst $T/depth --how depth --depth-model data/models/depth_model.json --split-file $T/split.json "${DP[@]}"
+          DIRS="real=$T/real,requote=$T/requote,depth=$T/depth"
+          if [ "$LAG" = true ]; then
+            mkdir -p $T/lag
+            for d in ${NEED//,/ }; do if [ -f data/history-replay-lag/md-$d.jsonl.gz ]; then cp data/history-replay-lag/md-$d.jsonl.gz $T/lag/; fi; done
+            twin_budgeted fill 1 node --import tsx research/historyTwin.ts --stage fill --src $T/lag --dst $T/lagdepth --how depth --depth-model data/models/depth_model.json --split-file $T/split.json "${DP[@]}"
+            DIRS="$DIRS,lag=$T/lag,lagdepth=$T/lagdepth"
+          fi
+          echo "[twin] features from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
+          # The fit days' own activity, printed beside the judged days' (not judged), except on a confirm split.
+          EXTRA=(); [ "$SPLIT" = confirm ] || EXTRA=(--extra-days "$FIT" --extra-dir data/twin-real15m --real15m data/twin-real15m)
+          # the real FIT rows the calibration stage already parsed (used only when they were made for exactly these days)
+          [ "$SPLIT" = confirm ] || [ ! -d data/calib ] || EXTRA+=(--handoff data/calib)
+          twin_budgeted features "$J" node --import tsx research/historyTwin.ts --stage features --dirs "$DIRS" --days "$JUDGE" --jobs "$J" "${EXTRA[@]}" --out $T
+          # sizes of the restricted real days are a function of the real book volume: not printed on a confirm split
+          [ "$SPLIT" = confirm ] || du -sh $T/* | cat
+      # The fast dev run: the requote, depth and real rows in ONE stage, no filled day written or read back (research/historyTwin.ts fastrows;
+      # RUNBOOK 3.2.1). It writes the files the step above leaves for 'Keep the judged features' and the verdict job, and prints the same
+      # [twin] lines plus '[twin] fast: STEP N s'. With real_features_run the real side comes from that run's files (the step before the
+      # depth model), refused unless it was built for exactly these days, real days, requote days and code. Dev and custom splits only
+      # (the split step refuses it on confirm), so no confirm day is read here.
+      - name: Fast rows (requote, depth and real rows in one stage; fast only)
+        if: ${{ steps.split.outputs.fast == 'true' }}
+        env:
+          JUDGE: ${{ steps.split.outputs.judge }}
+          DEPTH_PARAMS_RUN: ${{ inputs.depth_params_run }}
+          REAL_FEATURES_RUN: ${{ inputs.real_features_run }}
         run: |
           set -euo pipefail
           T=data/twin
-          echo "[twin] match from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
-          node --import tsx research/historyTwin.ts --stage match --real data/recordings --twin data/history-replay --days "$WARM,$DAYS" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]' || { echo "match failed"; exit 1; }
-          node --import tsx research/depthStudy.ts --recordings data/fit --series 15m --out data/models/depth_model.json 2>&1 | grep -E '^\[depth\]| n=' | sed -E 's/^\[depth\]/[twin] depth model:/; s/^  /[twin] depth cell: /' | cut -c1-420 | head -40 | tee -a "$RUNNER_TEMP/build.log" || true
-          [ -s data/models/depth_model.json ] || { echo "no depth model"; exit 1; }
-          node --import tsx research/historyTwin.ts --stage fill --src $T/requote --dst $T/depth --how depth --depth-model data/models/depth_model.json 2>&1 | grep '^\[twin\]' | tee -a "$RUNNER_TEMP/build.log"
-          mkdir -p $T/lag; for d in ${WARM} ${DAYS//,/ }; do if [ -f data/history-replay-lag/md-$d.jsonl.gz ]; then cp data/history-replay-lag/md-$d.jsonl.gz $T/lag/; fi; done
-          node --import tsx research/historyTwin.ts --stage fill --src $T/lag --dst $T/lagdepth --how depth --depth-model data/models/depth_model.json 2>&1 | grep '^\[twin\]' | tee -a "$RUNNER_TEMP/build.log"
-          echo "[twin] features from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
-          node --import tsx research/historyTwin.ts --stage features --dirs real=$T/real,requote=$T/requote,depth=$T/depth,lag=$T/lag,lagdepth=$T/lagdepth --days "$DAYS" --extra-days "$WARM" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]'
-          du -sh $T/* | cat
-      # The judged part alone (paired mechanics + per-contract features, small) for the verdict on a push.
+          DP=(); [ -z "${DEPTH_PARAMS_RUN:-}" ] || DP=(--depth-params data/sweep/best.json)
+          RC=(); [ -z "${REAL_FEATURES_RUN:-}" ] || RC=(--real-cache data/real-cache --real-run "$REAL_FEATURES_RUN")
+          # the real FIT rows the calibration stage already parsed (used only when they were made for exactly these days)
+          HO=(); [ ! -d data/calib ] || HO=(--handoff data/calib)
+          echo "[twin] fast rows from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
+          node --import tsx research/historyTwin.ts --stage fastrows --real data/twin-real15m --twin data/replay-src --days "$JUDGE" --depth-model data/models/depth_model.json --out $T "${DP[@]}" "${RC[@]}" "${HO[@]}" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
+      # THE ENTRY-STATE PROBE (round R3b; RUNBOOK 3.2.1, 4; REPORT ONLY). R3a found the decision model entering ETH, SOL and XRP on the twin's days and not on the real
+      # days, and a full dev run (3.3 h) is too slow to learn why. This reads the entry-time state the policy sees (the quote against the fair value, the spread, sigma,
+      # the model's inputs and its price) for real, requote and depth, per asset, policy-free (no fill, no position, no outcome label), in minutes, on the judged days or
+      # on the FIT days (probe_days: state marginals only). It builds three folders: real = the cached real days (data/twin-real15m), requote = the requote days of the
+      # probe days and the day before each (the build's data/replay-src and data/replay-fit when they hold them, else Drive's simulated/kalshi-replay-200d, copy only: a
+      # probe never regenerates a day), depth = those requote days through the file-route fill with the depth model and parameters the fast rows used. The stage
+      # (research/historyTwin.ts --stage probe) runs one process per day (at most 4 at once; the real day's parse is what takes the time), each with a log of its own
+      # (probe-day-K.log, K = the day's position in date order, never a date), and the report (--stage probe-report) is printed from the files it wrote.
+      # WHERE THINGS GO. The job log gets every status line, the units (`[twin] probe unit SRC day K: N rows kept, S s`), a `process exited CODE` line per day that
+      # died, a warning by POSITION for a requested day that wrote no file, the last lines of a failed day's log and of a failed fill-in (days and tickers scrubbed:
+      # the repository is public), then the whole report. build.log, which is what the build comment's last 60 lines are made of, gets only the bounded lines (those
+      # status lines, the report's header and summary), so the evidence the RUNBOOK sends the reader to in that comment (the depth fill-in line, the books-drawn
+      # line, the activity lines) is not pushed out; the whole report is the comment of its own, 'History twin probe, run N'.
+      # THE LIMITS NEST. The step's 25 minutes hold the fill-in (300 s) and the day passes (900 s), each with 30 s to die after the TERM, which is 21 minutes, and the
+      # Drive reads, the report and the comment have the 4 minutes left: a slow run is cut by an inner limit and ends in a WARNING plus a report of the files that
+      # were written, never by GitHub's own limit with nothing said. One wave is 4 days (the runner's cores); more days run in waves and the later ones may be cut.
+      # It can NEVER fail the job: continue-on-error, the limits above, every exit swallowed and a final exit 0; a probe that did not finish is one WARNING line (the
+      # cause first: the days that left no file by cause, then the newest log line; at most 299 characters) and, only when a requested day has no requote day, one advice line. It reads
+      # no confirm day (the split step refused probe on confirm and any confirm day; the stage asserts it again), prints counts, cents, shares and z-scores only (days
+      # are named day 1..N, no date, no ticker), and writes probe-SRC-DAY.json (aggregates only) and probe-days.json (the days asked for, so a re-read keeps the day
+      # numbers when a day has no file) that the Drive step below keeps under probe/ (copy only).
+      - name: Entry-state probe (R3b, report only)
+        if: ${{ steps.split.outputs.fast == 'true' && inputs.probe }}
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JUDGE: ${{ steps.split.outputs.judge }}
+          PROBE_DAYS: ${{ inputs.probe_days }}
+          MODEL_DRIVE: ${{ inputs.model_drive }}
+          DEPTH_PARAMS_RUN: ${{ inputs.depth_params_run }}
+          # each probe process gets this heap (up to 4 at once on the 16 GB runner; a GUESS, never measured on a real full-depth day, like TWIN_CHILD_HEAP_MB)
+          PROBE_HEAP_MB: '3072'
+        run: |
+          set -uo pipefail
+          # GitHub runs a step with no `shell:` as `bash -e {0}`: with -e on, a failing probe_run below would end the step on the spot (red, no WARNING, no exit 0). -e is off in this shell
+          # on purpose; the subshell that does the work turns it on for itself, and it is NOT run in a `||` list (bash ignores -e inside a subshell that is) (RUNBOOK 3.2.1)
+          set +e
+          L="$RUNNER_TEMP/build.log"; STEP_LOG="$RUNNER_TEMP/probe-step.log"; P=data/twin/probe
+          : > "$STEP_LOG"; rm -f "$RUNNER_TEMP/probe-hint.txt" "$RUNNER_TEMP/probe-why.txt" "$RUNNER_TEMP"/probe-day-*.started
+          # a status line goes to the job log (fd 3: the subshell below keeps it), build.log and the step's own log; the rest of probe_run's output (rclone, node) goes to the step's log file only
+          exec 3>&1
+          # (a line is cut under 300 characters, as the build comment cuts it, so the job log and the comment show the same)
+          say() { echo "$*" | cut -c1-299 | tee -a "$L" "$STEP_LOG" >&3; }
+          # the days and tickers a log line may carry are scrubbed out of anything printed from a log (the repository is public)
+          scrub() { sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9:.]+Z?)?/<day>/g; s/KX[A-Za-z0-9._-]+/<ticker>/g'; }
+          lastlines() { { tail -n "$2" "$1" 2>/dev/null | cut -c1-200 | scrub; } || true; }
+          # the one-line message a stage prints ('[twin] ERROR: ...') first, then the last N lines that are not probe report lines, the ERROR line again or stack frames
+          errtail() { { { grep -m1 '^\[twin\] ERROR:' "$1"; grep -vE '^\[twin\] (probe|ERROR:)|^ *at |^Node\.js v' "$1" | tail -n "$2"; } 2>/dev/null | cut -c1-200 | scrub; } || true; }
+          # a day's own log without the report lines (the units are printed on their own; what is left is an error, a warning, a stack)
+          daylog() { errtail "$RUNNER_TEMP/probe-day-$1.log" "$2"; }
+          # why a day left no file, from what its process left behind (the job log only; by position, never a date). Args: K N EXITCODE(or empty) STARTED(1/0) HASLOG(1/0) FINISHED(1/0)
+          daywhy() {
+            local k="$1" n="$2" code="$3" started="$4" haslog="$5" fin="$6" w=""
+            if [ "$started" -eq 0 ]; then w="its process never started (a later wave: the day passes' limit was reached first); dispatch it on its own (RUNBOOK 3.2.1)"
+            elif [ "$code" = 134 ]; then w="node ran out of heap (PROBE_HEAP_MB is $PROBE_HEAP_MB): probe fewer days at once; the director raises PROBE_HEAP_MB in the workflow (RUNBOOK 3.2.1)"
+            elif [ "$code" = 137 ]; then w="it was killed from outside, most likely out of memory (the killer leaves no log): probe fewer days at once (RUNBOOK 3.2.1)"
+            elif [ -n "$code" ] && [ "$haslog" -eq 0 ]; then w="its process wrote no log before it exited"
+            elif [ -z "$code" ] && [ "$fin" -eq 0 ]; then w="its process was running when the limit cut it, or was killed, before its first source finished (it prints nothing until then); the unit seconds of the other days show how long one real pass takes: dispatch 1 or 2 days (probe_days=A,B) (RUNBOOK 3.2.1)"; fi
+            [ -z "$w" ] || echo "[twin] probe day $k of $n: $w"
+          }
+          # the days that left no file, by cause, from probe-why.txt (lines `TAG K`): "day(s) 1,3 exited 137; day(s) 2 cut or killed; day(s) 4 never started"
+          whysum() {
+            local f="$RUNNER_TEMP/probe-why.txt" t ds out=""
+            [ -s "$f" ] || return 0
+            for t in $(cut -d' ' -f1 "$f" | sort -u); do
+              ds=$(grep "^$t " "$f" | cut -d' ' -f2 | sort -n | paste -sd, -)
+              case "$t" in
+                exited-*) out="${out:+$out; }day(s) $ds exited ${t#exited-}";;
+                cut) out="${out:+$out; }day(s) $ds cut or killed";;
+                nostart) out="${out:+$out; }day(s) $ds never started";;
+              esac
+            done
+            printf '%s' "$out"
+          }
+          probe_run() {
+            PD=$(printf '%s' "${PROBE_DAYS:-}" | tr -d ' '); [ -n "$PD" ] || PD=$JUDGE
+            [[ "$MODEL_DRIVE" =~ ^[A-Za-z0-9._/-]+$ && "$MODEL_DRIVE" != *..* ]] || { echo "model_drive must be a folder name under models/"; return 1; }
+            DAYS=$(printf '%s\n' ${PD//,/ } | sort -u); N=$(printf '%s\n' $DAYS | grep -c . || true)
+            # the probe days and the day before each (the warm-up)
+            NEED=$(for d in $DAYS; do echo "$d"; date -u -d "$d - 1 day" +%F; done | sort -u | paste -sd, -)
+            mkdir -p "$P" data/probe-model data/probe-requote data/probe-requote-drive data/probe-src
+            # 1. the decision model to price with (copy-only Drive read; its vol model when it has one)
+            bash deploy/drive_lab.sh get "models/$MODEL_DRIVE" data/probe-model --include model.json --include vol_model.json || { echo "models/$MODEL_DRIVE is not on Drive"; return 1; }
+            [ -s data/probe-model/model.json ] || { echo "models/$MODEL_DRIVE has no model.json"; return 1; }
+            VMF=""; [ ! -s data/probe-model/vol_model.json ] || VMF=data/probe-model/vol_model.json
+            # 2. the requote days: the build's own copies first, the rest from Drive (the manifest version must be this code's; a day it lacks is left out, never regenerated)
+            MISS=""
+            for d in ${NEED//,/ }; do
+              if [ -s "data/replay-src/md-$d.jsonl.gz" ]; then cp "data/replay-src/md-$d.jsonl.gz" data/probe-requote/
+              elif [ -s "data/replay-fit/md-$d.jsonl.gz" ]; then cp "data/replay-fit/md-$d.jsonl.gz" data/probe-requote/
+              else MISS="${MISS:+$MISS,}$d"; fi
+            done
+            if [ -n "$MISS" ]; then
+              ARGS=(--include replay-manifest.json); for d in ${MISS//,/ }; do ARGS+=(--include "md-$d.jsonl.gz"); done
+              rc=0; bash deploy/drive_lab.sh get simulated/kalshi-replay-200d data/probe-requote-drive "${ARGS[@]}" || rc=$?
+              { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || { echo "reading simulated/kalshi-replay-200d on Drive failed (rclone exit $rc)"; return 1; }
+              node --import tsx research/historyTwin.ts --stage twin-source --dir data/probe-requote-drive --days "$MISS" --out data/probe-src > /dev/null
+              for d in $(tr ',' ' ' < data/probe-src/drive-days.txt); do cp "data/probe-requote-drive/md-$d.jsonl.gz" data/probe-requote/; done
+              LEFT=$(tr ',' '\n' < data/probe-src/regen-days.txt | grep -c . || true)
+              if [ "$LEFT" -ne 0 ]; then
+                say "[twin] probe: $LEFT requote day(s) (a probe day or the day before one) are not on Drive at this replay version; a probe never regenerates a day, so they are left out"
+              fi
+            fi
+            # the FIT-day remedy is about a REQUESTED day without its requote day; a missing warm-up day alone (always so for the judged days whose day before is a FIT day, with depth_model_run) is no failure and gets no advice
+            RQ=""; for d in $DAYS; do [ -s "data/probe-requote/md-$d.jsonl.gz" ] || RQ=1; done
+            if [ -n "$RQ" ]; then
+              : > "$RUNNER_TEMP/probe-hint.txt"
+              say "[twin] probe: a FIT day's requote day is in the build only when the run fitted the depth model here: omit depth_model_run to keep the FIT requote days, or use a run whose Drive replay manifest version equals REPLAY_VERSION (RUNBOOK 3.2.1)"
+            fi
+            # 3. the depth side: the requote days through the file-route fill, with the depth model and parameters the fast rows used (its own lines stay out of build.log)
+            DP=(); [ -z "${DEPTH_PARAMS_RUN:-}" ] || DP=(--depth-params data/sweep/best.json)
+            timeout --kill-after=30 300 node --import tsx research/historyTwin.ts --stage fill --src data/probe-requote --dst "$P/depth" --how depth --depth-model data/models/depth_model.json --split-file data/twin/split.json "${DP[@]}" > "$RUNNER_TEMP/probe-fill.log" 2>&1 || {
+              echo "the depth fill-in of the probe's days failed; last lines: $(errtail "$RUNNER_TEMP/probe-fill.log" 3 | tr '\n' '|')"
+              { echo "::group::the depth fill-in of the probe's days failed: the last 40 lines of its log (days and tickers scrubbed)"; lastlines "$RUNNER_TEMP/probe-fill.log" 40; echo "::endgroup::"; } >&3
+              return 1
+            }
+            say "[twin] probe depth side: $(ls "$P/depth" | grep -c '^md-' || true) requote day(s) filled in with the depth model and parameters the fast rows used"
+            # 4. the days, one process each (at most 4 at once, a log of its own), the whole under its own limit. Each writes its probe-SRC-DAY.json files and prints its own report into its log
+            # (the final report below, from the files, is the one that counts). A day whose process dies says so by position: `process exited CODE` (134: node's heap, 137: killed from outside)
+            J=$(nproc); [ "$J" -le 4 ] || J=4; [ "$J" -ge 1 ] || J=1
+            [ "$N" -le "$J" ] || say "[twin] probe: $N day(s) on $J process slot(s) run in waves; the day passes' 15-minute limit may cut the later ones (RUNBOOK 3.2.1: at most $J probe days per dispatch)"
+            export NODE_OPTIONS="--max-old-space-size=${PROBE_HEAP_MB}" P VMF RUNNER_TEMP PROBE_N="$N"
+            probe_day() {
+              local k="$1" d="$2" rc=0
+              # a marker before node starts: a day with a marker and no log was running (cut or killed), a day without one never started (RUNBOOK 3.2.1)
+              : > "$RUNNER_TEMP/probe-day-$k.started"
+              node --import tsx research/historyTwin.ts --stage probe --dirs "real=data/twin-real15m,requote=data/probe-requote,depth=$P/depth" --days "$d" --model data/probe-model/model.json ${VMF:+--vol-model "$VMF"} --split-file data/twin/split.json --out "$P" > "$RUNNER_TEMP/probe-day-$k.log" 2>&1 || rc=$?
+              [ "$rc" -eq 0 ] || echo "[twin] probe day $k of $PROBE_N: process exited $rc"
+              return 0
+            }
+            export -f probe_day
+            XRC=0; EXITS="$RUNNER_TEMP/probe-exits.log"
+            printf '%s\n' $DAYS | awk '{print NR, $0}' | timeout --kill-after=30 900 xargs -P "$J" -L1 bash -c 'probe_day "$@"' _ > "$EXITS" 2>&1 || XRC=$?
+            case "$XRC" in
+              0) ;;
+              124) say "[twin] WARNING: the entry-state probe's day passes hit their 15-minute limit and were stopped; the report is made of the files written so far (the build is not affected)";;
+              *) say "[twin] WARNING: the entry-state probe's day passes ended with exit $XRC (xargs); the report is made of the files written (the build is not affected)";;
+            esac
+            # 5. what came of each requested day, by position in date order (never a date): its units, whether its process died or was cut, how many source files it wrote
+            K=0; NONE=""; SOME=""; NF=0
+            for d in $DAYS; do
+              K=$((K + 1))
+              { grep '^\[twin\] probe unit ' "$RUNNER_TEMP/probe-day-$K.log" 2>/dev/null | sed -E "s/^\[twin\] probe unit ([a-z]+):/[twin] probe unit \1 day $K:/" || true; } | while IFS= read -r l; do say "$l"; done
+              c=$(find "$P" -maxdepth 1 -name "probe-*-$d.json" | wc -l); NF=$((NF + c))
+              died=0; code=""; grep -q "^\[twin\] probe day $K of " "$EXITS" 2>/dev/null && died=1
+              [ "$died" -eq 0 ] || code=$(sed -nE "s/^\[twin\] probe day $K of [0-9]+: process exited ([0-9]+)\$/\1/p" "$EXITS" | head -1 || true)
+              started=0; [ ! -e "$RUNNER_TEMP/probe-day-$K.started" ] || started=1
+              haslog=0; [ ! -s "$RUNNER_TEMP/probe-day-$K.log" ] || haslog=1
+              # a process that finished prints the stage's report (its header is `[twin] probe: N day(s) ...`, or `[twin] probe report: no probe files ...`); one that was cut or killed prints at most its unit lines
+              fin=0; grep -qE '^\[twin\] probe (report: |: [0-9])' "$RUNNER_TEMP/probe-day-$K.log" 2>/dev/null && fin=1
+              [ "$c" -gt 0 ] || NONE="${NONE:+$NONE,}$K"
+              { [ "$c" -eq 0 ] || [ "$c" -ge 3 ]; } || SOME="${SOME:+$SOME,}$K"
+              # the cause by position, for the WARNING (whysum)
+              if [ "$died" -eq 1 ]; then echo "exited-${code:-unknown} $K" >> "$RUNNER_TEMP/probe-why.txt"
+              elif [ "$started" -eq 0 ]; then echo "nostart $K" >> "$RUNNER_TEMP/probe-why.txt"
+              elif [ "$fin" -eq 0 ] && [ "$c" -lt 3 ]; then echo "cut $K" >> "$RUNNER_TEMP/probe-why.txt"; fi
+              if [ "$died" -eq 1 ]; then say "$(grep "^\[twin\] probe day $K of " "$EXITS" | head -1)"; fi
+              if [ "$died" -eq 1 ] || [ "$c" -eq 0 ] || { [ "$fin" -eq 0 ] && [ "$c" -lt 3 ]; }; then
+                daywhy "$K" "$N" "$code" "$started" "$haslog" "$fin" >&3
+                if [ "$haslog" -eq 1 ]; then
+                  if [ -n "$(daylog "$K" 5)" ]; then { echo "[twin] probe day $K of $N: last lines of its log, report lines left out (days and tickers scrubbed)"; daylog "$K" 5; } >&3
+                  else echo "[twin] probe day $K of $N: its log holds only the stage's own report lines (the unit lines above say why it wrote no file)" >&3; fi
+                fi
+              fi
+            done
+            if [ "$NF" -eq 0 ]; then
+              # (the cause comes first and the line stays short: the WARNING that quotes it is cut at 299 characters)
+              echo "no probe file was written${RQ:+ (a requested day has no requote day)}; last lines: $({ cat "$RUNNER_TEMP"/probe-day-*.log > "$RUNNER_TEMP/probe-days-all.log" 2>/dev/null; errtail "$RUNNER_TEMP/probe-days-all.log" 3; } | tr '\n' '|')"
+              return 1
+            fi
+            if [ -n "$NONE" ]; then
+              NN=$(printf '%s\n' ${NONE//,/ } | grep -c .)
+              say "[twin] WARNING: the entry-state probe wrote files for $((N - NN)) of $N requested day(s); requested day(s) $NONE (date order) have none and are left out of every line of the report, which keeps the requested day numbers (day 1 = the earliest requested day)"
+              [ -z "$(whysum)" ] || say "[twin] probe: why a day has no file, by position: $(whysum)"
+            fi
+            [ -z "$SOME" ] || say "[twin] probe: requested day(s) $SOME (date order) have files for fewer than 3 sources (a requote or depth day left out, or the day's process did not finish): the report says which, per day"
+            # the days asked for, so the report (and a later re-read) numbers by the request, not by the days that have a file
+            printf '{"v":1,"days":[%s]}\n' "$(printf '"%s"\n' $DAYS | paste -sd, -)" > "$P/probe-days.json"
+            # 6. the report, from the files (the same code a later --stage probe-report prints with)
+            node --import tsx research/historyTwin.ts --stage probe-report --dir "$P" > "$RUNNER_TEMP/probe-report.txt" 2> "$RUNNER_TEMP/probe-report.err" || { echo "the probe report failed: $(errtail "$RUNNER_TEMP/probe-report.err" 2 | tr '\n' '|')"; return 1; }
+          }
+          ( set -euo pipefail; probe_run ) >> "$STEP_LOG" 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ] || [ ! -s "$RUNNER_TEMP/probe-report.txt" ]; then
+            # the WARNING is cut at 299 characters (as the build comment cuts it): the cause comes first (the days that left no file, by cause, then the newest log line first), and the remedy for
+            # FIT days is a line of its own after it, only when a REQUESTED day has no requote day
+            CAUSE=$(whysum); [ -z "$CAUSE" ] || CAUSE="$CAUSE; "
+            say "[twin] WARNING: the entry-state probe did not finish (exit $rc); the build is not affected (report only). Last lines: ${CAUSE}$(grep -vE '^\[twin\] (probe|WARNING: the entry-state probe)|^ *at ' "$STEP_LOG" | tail -3 | tac | cut -c1-200 | scrub | tr '\n' '|')"
+            [ ! -e "$RUNNER_TEMP/probe-hint.txt" ] || say "[twin] probe: for FIT days omit depth_model_run so the run fits and keeps their requote days (RUNBOOK 3.2.1)"
+            # whatever the step wrote to its own log file (rclone, node, the shell's errors) is otherwise nowhere a reader can see it
+            { echo "::group::the probe step's own log, the last 60 lines (days and tickers scrubbed)"; lastlines "$STEP_LOG" 60; echo "::endgroup::"; }
+          else
+            grep '^\[twin\] probe' "$RUNNER_TEMP/probe-report.txt" | cut -c1-300 > "$RUNNER_TEMP/probe-lines.txt" || true
+            # build.log (the build comment's tail) gets the bounded lines only: the header, the closing summary and the like (a handful), never the whole report
+            grep -E '^\[twin\] probe( summary| report)?: ' "$RUNNER_TEMP/probe-lines.txt" >> "$L" || true
+            cat "$RUNNER_TEMP/probe-lines.txt"
+            # the report is long: a comment of its own (the build comment keeps the bounded lines)
+            { echo "History twin probe, run ${{ github.run_id }}"; echo; echo '```'; head -c 60000 "$RUNNER_TEMP/probe-lines.txt"; echo '```'; } > "$RUNNER_TEMP/probe.md"
+            gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/probe.md" --silent || echo "could not post the comment"
+          fi
+          exit 0
+      # The judged part alone (paired mechanics + per-contract features + the split, small) for the verdict.
+      # The real side's sidecars (real-meta.json, real-activity.json, real-fit-features.json: the real FIT rows the calibration fits to) are there on runs that
+      # read no confirm day: a later fast run reuses them.
       - name: Keep the judged features
-        run: mkdir -p data/twinlite && cp data/twin/paired.json data/twin/features-*.json data/twinlite/ && du -sh data/twinlite | cat
+        run: |
+          set -euo pipefail
+          mkdir -p data/twinlite && cp data/twin/paired.json data/twin/features-*.json data/twin/split.json data/twin/twin-source.json data/twinlite/
+          for f in real-meta.json real-activity.json real-fit-features.json; do [ ! -f "data/twin/$f" ] || cp "data/twin/$f" data/twinlite/; done
+          du -sh data/twinlite | cat
       - uses: actions/cache/save@v4
+        timeout-minutes: 5
         with:
           path: data/twinlite
           key: history-twin-lite-${{ github.run_id }}
-      # Steven (Nov 2): all history on Drive, raw and simulated. The simulated side of this run (the deep-history twin's
-      # books and fills, the depth/lag fill-ins, the public history and its replay, the models and the judged
-      # features) goes to simulated/history-twin/<run id>; the real days are already on Drive (recordings/).
-      - name: Drive setup
-        if: always() && steps.days.outcome == 'success'
-        uses: ./.github/actions/drive-setup
-        with:
-          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      # Steven (Nov 2): all history on Drive, raw and simulated. The simulated side of this run (the twin's books and fills,
+      # the depth/lag fill-ins, regenerated history, the model and the judged features) goes to simulated/history-twin/<run id>;
+      # the real days are on Drive already (recordings/, derived/twin-real15m/).
+      # It runs after a cut or a failed stage too (always()), from whatever data/ holds (each folder is linked only when it is there), and has its own limit, so that this
+      # step and the report below together fit the reserve the match, fill and features commands leave (TWIN_RESERVE_MIN above: a test adds the two limits up).
       - name: Keep the simulated twin on Drive
-        if: always() && steps.days.outcome == 'success'
+        if: ${{ always() && steps.drive.outcome == 'success' }}
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           S="$RUNNER_TEMP/sim"; rm -rf "$S"; mkdir -p "$S"
@@ -240,42 +1173,64 @@ jobs:
           [ -d data/twinlite ] && ln -s "$GITHUB_WORKSPACE/data/twinlite" "$S/twinlite"
           for d in history history-replay history-replay-lag; do [ -d data/$d ] && ln -s "$GITHUB_WORKSPACE/data/$d" "$S/$d"; done
           [ -d data/models ] && ln -s "$GITHUB_WORKSPACE/data/models" "$S/models"
-          echo "${{ steps.days.outputs.warm }},${{ steps.days.outputs.days }}" > "$S/days.txt"
+          [ -d data/sweep ] && ln -s "$GITHUB_WORKSPACE/data/sweep" "$S/sweep"
+          # the probe's aggregates (R3b: counts and histograms only, no recording line; the depth days it filled are not kept), under probe/
+          if ls data/twin/probe/probe-*.json > /dev/null 2>&1; then mkdir -p "$S/probe"; for f in data/twin/probe/probe-*.json; do ln -s "$GITHUB_WORKSPACE/$f" "$S/probe/$(basename "$f")"; done; fi
+          echo "split ${{ steps.split.outputs.name }} fit ${{ steps.split.outputs.fit }} judge ${{ steps.split.outputs.judge }} warm ${{ steps.real.outputs.warm }}" > "$S/days.txt"
           RCLONE_COPY_LINKS=true bash deploy/drive_lab.sh put "simulated/history-twin/${{ github.run_id }}" "$S"
-      # Only a dispatch runs the backtests that read it (a push builds and judges alone: nothing big is cached).
+      # Only the backtest legs read the whole twin folder (a plain verdict reads the small judged files above).
       - uses: actions/cache/save@v4
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.backtests }}
+        timeout-minutes: 10
         with:
           path: |
             data/twin
             data/models
           key: history-twin-${{ github.run_id }}
-      - name: Report (commit comment; logs can't be read from the cloud session)
+      # The comment lands on the commit the dispatch ran on (the branch head at dispatch time). Its framing lines (the split, the
+      # real days, the requote source, the depth fit, every ERROR) come first, then the last 60 other lines: nothing a reader
+      # needs is cut off by the tables that follow it. The reason of a failure is a '[twin] ERROR:' line (twin-lib.sh, the
+      # stages' own catch), so it is here even when the job log cannot be read.
+      - name: Report (commit comment; RUNBOOK 'Reading results')
         if: always()
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "History twin build, run ${{ github.run_id }} (${{ job.status }})"; echo; echo '```'; grep -E '^\[(twin|kalshi-replay-data)\]' "$RUNNER_TEMP/build.log" 2>/dev/null | cut -c1-400 | tail -40; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          L="$RUNNER_TEMP/build.log"; ALL="$RUNNER_TEMP/twin-lines.txt"
+          grep -E '^\[(twin|kalshi-replay-data)\]' "$L" 2>/dev/null | cut -c1-300 > "$ALL" || true
+          # the timing lines (round S1: a step's seconds per day, 'took', and the time budget it was given) are framing lines too: a run cut at the job's budget shows how far it got
+          FRAME='^\[twin\] (ERROR|WARNING|split|real 15|requote source|requote days|depth model fitted|depth model schema|depth model: asset|depth model calibration|depth model reused|real side|fast|decision model|CONFIRM|no cached|matched|confirm split|calibration|time budget|match took|match [0-9]{4}-[0-9]{2}-[0-9]{2}: tickers|fill took|fill [0-9]{4}-[0-9]{2}-[0-9]{2}: |features took|features [a-z]+ [0-9]{4}-[0-9]{2}-[0-9]{2}: )'
+          {
+            echo "History twin build, run ${{ github.run_id }} (${{ job.status }}), on commit ${GITHUB_SHA:0:8}"; echo; echo '```'
+            [ -s "$ALL" ] || echo "(no [twin] lines: the build failed before its first logging step (checkout or dependency install); the reason is an annotation of the run: gh run view ${{ github.run_id }})"
+            grep -E "$FRAME" "$ALL" || true
+            echo '--- the last lines ---'
+            grep -vE "$FRAME" "$ALL" | tail -60 || true
+            echo '```'
+          } > "$RUNNER_TEMP/comment.md"
           gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
 
+  # ------------------------------------------------------------------------------------------------------------------
+  # Backtest legs (checks 2-4), only with backtests=true; at most 7 runners at a time (+ a re-verdict = 8). On the confirm split
+  # NOTHING per-day or per-window is printed or kept where the public can read it: the [fidelity] lines (entries, fills, contracts,
+  # hours, end cash, funnel) stay in the runner's own log file, the per-window P&L goes to Drive (never an artifact), and the
+  # step prints one counts-only line per part.
   backtest:
     needs: build
-    # A push runs only the build (paired mechanics + the adversary); the
-    # backtests run on a dispatch (or once this line is switched), at most ten runners at a time.
-    if: ${{ inputs.reuse_run != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.backtests }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 340
     strategy:
       fail-fast: false
-      # Ten of the twenty matrix jobs at a time (Nov 5): the org's runners took 36 jobs together (Nov 2-4).
-      max-parallel: 10
+      max-parallel: 7
       matrix:
-        how: [real, placebo, requote, depth, lagdepth]
+        how: [real, placebo, requote, depth]
         part: [0, 1, 2, 3]
     env:
       DAYS: ${{ needs.build.outputs.days }}
-      WARM: ${{ needs.build.outputs.warm }}
+      SPLIT: ${{ needs.build.outputs.split }}
       PARTS: ${{ inputs.parts || '4' }}
     steps:
       - uses: actions/checkout@v5
@@ -299,43 +1254,78 @@ jobs:
             data/twin
             data/models
           key: history-twin-${{ github.run_id }}
-      - name: Drive setup (the cache was evicted)
-        if: hashFiles('data/models/model.json') == ''
+      # Drive: the evicted-cache fallback below AND the per-window P&L at the end (never an artifact: this repository is public).
+      - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
-      - name: The twin from Drive
+      - name: The twin from Drive (the cache was evicted)
         if: hashFiles('data/models/model.json') == ''
         run: |
           set -euo pipefail
-          case "${{ matrix.how }}" in real|placebo) echo "::error::the real side is only in this run's cache (evicted); rerun the build"; exit 1;; esac
+          case "${{ matrix.how }}" in real|placebo) echo "::error::the restricted real side is only in this run's cache (evicted); rerun the build"; exit 1;; esac
           bash deploy/drive_lab.sh get "simulated/history-twin/${{ github.run_id }}/${{ matrix.how }}" "data/twin/${{ matrix.how }}"
           bash deploy/drive_lab.sh get "simulated/history-twin/${{ github.run_id }}/models" data/models
+      # One backtest per judged day, each starting from the day before it (a judged day's neighbours need not be judged days).
       - name: Backtest ${{ matrix.how }}, part ${{ matrix.part }}
+        env:
+          HOW: ${{ matrix.how }}
+          PART: ${{ matrix.part }}
         run: |
           set -euo pipefail
-          IFS=, read -ra D <<< "$DAYS"; N=${#D[@]}; PER=$(( (N + PARTS - 1) / PARTS )); S=$(( ${{ matrix.part }} * PER ))
+          BLIND=false; [ "$SPLIT" != confirm ] || BLIND=true
+          IFS=, read -ra D <<< "$DAYS"; N=${#D[@]}; PER=$(( (N + PARTS - 1) / PARTS )); S=$(( PART * PER ))
           [ "$S" -lt "$N" ] || { echo "no days in this part"; mkdir -p "$RUNNER_TEMP/out"; exit 0; }
-          MINE=("${D[@]:$S:$PER}"); PREV=$([ "$S" -eq 0 ] && echo "$WARM" || echo "${D[$((S-1))]}")
-          SRC=data/twin/${{ matrix.how }}; [ "${{ matrix.how }}" = placebo ] && SRC=data/twin/real
-          DIR="$RUNNER_TEMP/days"; mkdir -p "$DIR"
-          for d in "$PREV" "${MINE[@]}"; do ln -sf "$GITHUB_WORKSPACE/$SRC/md-$d.jsonl.gz" "$DIR/"; done
+          MINE=("${D[@]:$S:$PER}")
+          SRC=data/twin/$HOW; [ "$HOW" = placebo ] && SRC=data/twin/real
+          LAT=(); [ "$HOW" = placebo ] && LAT=(--latency-ms 250)
+          # R3a (RUNBOOK 3.6, 4): dev and custom legs also write positions-HOW-pN-DAY.json beside the windows file and print counts-only
+          # "[twin] positions" lines (where the twin's extra entries come from; report only). A confirm leg is never asked: the stage refuses the flag on a confirm day.
+          POS=(); [ "$BLIND" = true ] || POS=(--positions)
           export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper AUTO_TRAIN=off
-          LAT=(); [ "${{ matrix.how }}" = placebo ] && LAT=(--latency-ms 250)
-          node --import tsx research/historyTwin.ts --stage backtest --dir "$DIR" --name "${{ matrix.how }}-p${{ matrix.part }}" --days "$(IFS=,; echo "${MINE[*]}")" --model data/models/model.json --out "$RUNNER_TEMP/out" "${LAT[@]}" > "$RUNNER_TEMP/bt.log" 2>&1 || { tail -5 "$RUNNER_TEMP/bt.log" | cut -c1-200; exit 1; }
-          grep '^\[fidelity\]' "$RUNNER_TEMP/bt.log" | grep -v ' windows: ' | cut -c1-300
-      # Per-window P&L only (no recordings, no settings).
-      - uses: actions/upload-artifact@v4
-        with:
-          name: twin-${{ matrix.how }}-p${{ matrix.part }}
-          path: ${{ runner.temp }}/out/
-          retention-days: 3
-          if-no-files-found: ignore
+          DONE=0
+          for d in "${MINE[@]}"; do
+            DIR="$RUNNER_TEMP/days-$d"; mkdir -p "$DIR"
+            PREV=$(date -u -d "$d - 1 day" +%F)
+            for x in "$PREV" "$d"; do
+              if [ -e "$SRC/md-$x.jsonl.gz" ]; then ln -sf "$GITHUB_WORKSPACE/$SRC/md-$x.jsonl.gz" "$DIR/"
+              elif [ "$x" = "$d" ]; then echo "::error::no $d in $SRC"; exit 1; fi
+            done
+            rc=0
+            node --import tsx research/historyTwin.ts --stage backtest --dir "$DIR" --name "$HOW-p$PART-$d" --days "$d" --model data/models/model.json --out "$RUNNER_TEMP/out" "${LAT[@]}" "${POS[@]}" > "$RUNNER_TEMP/bt-$d.log" 2>&1 || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              if [ "$BLIND" = true ]; then echo "[twin] confirm backtest $HOW part $PART: day $((DONE + 1)) of ${#MINE[@]} failed (exit $rc); the log is withheld on the confirm split: $(grep -m1 -E '^[A-Za-z]*Error' "$RUNNER_TEMP/bt-$d.log" | cut -c1-160)"
+              else tail -5 "$RUNNER_TEMP/bt-$d.log" | cut -c1-200; fi
+              exit 1
+            fi
+            [ "$BLIND" = true ] || grep -E '^\[fidelity\]|^\[twin\] positions' "$RUNNER_TEMP/bt-$d.log" | grep -v ' windows: ' | cut -c1-300
+            DONE=$((DONE + 1))
+          done
+          [ "$BLIND" != true ] || echo "[twin] confirm backtest $HOW part $PART: $DONE of ${#MINE[@]} day(s) done (the per-day lines stay in the runner's own log file; nothing per day is printed)"
+      # Per-window P&L only (no recordings, no settings). On Drive, not an artifact: an artifact of a public repository can be
+      # downloaded by anyone, and on the confirm split these files are per-day, per-window results. drive_lab.sh put ends with
+      # 'kept on Drive: NAME (Total size: X (N Byte))': on a confirm leg that is one day's file (about 90 bytes per traded
+      # window, so the byte count is check 4's quantity and the P&L digits) per source, so its output is withheld there.
+      - name: Keep the per-window P&L on Drive (copy only)
+        run: |
+          set -euo pipefail
+          if ls "$RUNNER_TEMP"/out/windows-*.json > /dev/null 2>&1; then
+            N="simulated/history-twin/${{ github.run_id }}/windows/twin-${{ matrix.how }}-p${{ matrix.part }}"
+            if [ "$SPLIT" = confirm ]; then
+              rc=0; bash deploy/drive_lab.sh put "$N" "$RUNNER_TEMP/out" > /dev/null 2> "$RUNNER_TEMP/put.err" || rc=$?
+              [ "$rc" -eq 0 ] || { echo "[twin] confirm window files NOT kept on Drive (drive_lab.sh put exit $rc); its output is withheld on the confirm split (an rclone error line can carry a size): re-dispatch once"; exit 1; }
+              echo "[twin] confirm window files kept on Drive (sizes withheld on the confirm split)"
+            else
+              bash deploy/drive_lab.sh put "$N" "$RUNNER_TEMP/out"
+            fi
+          else echo "no per-window file in this part (no days in it)"; fi
 
+  # ------------------------------------------------------------------------------------------------------------------
   verdict:
     needs: [build, backtest]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 60
     permissions:
       contents: write
@@ -356,61 +1346,146 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
+      # The verdict reads ONLY the small judged files of this run (the lite cache, else Drive: simulated/history-twin/RUN/twinlite) and, with
+      # backtests, the legs' per-window P&L (Drive). It never restores the build's big cache (data/twin + data/models, 9 GB): GitHub's
+      # repository cache limit is 10 GB and it evicts the least recently used entries, so P2b's verdict (run 45152244309) found nothing
+      # 12 minutes after its legs had restored that cache, and a finished 3.4-hour run gave no verdict. No step of this job may fail on a
+      # miss of a cache. The confirm look was numbered by the build job (twin-look.sh runs nowhere in this job: it only prints it), so
+      # whatever fails here must fail BEFORE anything is read or printed, and the data the verdict needs is in place before the Verdict step.
       - uses: actions/cache/restore@v4
-        if: github.event_name == 'workflow_dispatch'
-        with:
-          path: |
-            data/twin
-          key: history-twin-${{ github.run_id }}
-          fail-on-cache-miss: true
-      - uses: actions/cache/restore@v4
-        if: github.event_name != 'workflow_dispatch'
         with:
           path: data/twinlite
           key: history-twin-lite-${{ github.run_id }}
-          fail-on-cache-miss: true
-      - name: The judged features in place (push)
-        if: github.event_name != 'workflow_dispatch'
-        run: mkdir -p data/twin && cp data/twinlite/* data/twin/
-      - uses: actions/download-artifact@v4
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
         with:
-          pattern: twin-*
-          path: ${{ runner.temp }}/in
-      - name: Verdict
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The judged features from Drive (the cache was evicted)
+        if: hashFiles('data/twinlite/paired.json') == ''
+        env:
+          RUN: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          for how in real placebo requote depth lagdepth; do
-            python3 - "$how" "$RUNNER_TEMP/in" data/twin <<'PY'
-          import glob, json, sys
-          how, src, out = sys.argv[1:]
-          parts = sorted(glob.glob(f"{src}/twin-{how}-p*/windows-{how}-p*.json"))
-          w = [x for f in parts for x in json.load(open(f))]
-          if parts: json.dump(w, open(f"{out}/windows-{how}.json", "w"))
-          print(f"{how}: {len(parts)} part(s), {len(w)} window(s)")
-          PY
-          done
-          node --import tsx research/historyTwin.ts --stage verdict --out data/twin 2>&1 | tee "$RUNNER_TEMP/verdict.log" | grep '^\[twin\]'
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "the run id is not a number"
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/twinlite || rc=$?
+          [ "$rc" -eq 0 ] || twin_fail "run $RUN's judged features are neither in the lite cache nor readable on Drive (simulated/history-twin/$RUN/twinlite; drive_lab.sh get exit $rc, 3 = nothing there): nothing was read and no verdict is made"
+          echo "[twin] the judged features of run $RUN were read from Drive (the lite cache is gone)" | tee -a "$TWIN_LOG"
+      - name: The judged features in place
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          MISS=""; for f in paired.json features-real.json; do [ -s "data/twinlite/$f" ] || MISS="$MISS $f"; done
+          [ -z "$MISS" ] || twin_fail "the judged features of run ${{ github.run_id }} are not whole (missing:$MISS): nothing was read and no verdict is made"
+          mkdir -p data/twin && cp data/twinlite/* data/twin/
+          rm -f data/twin/windows-*.json
+      # The backtest legs' per-window P&L, from Drive (they are not artifacts: this repository is public).
+      - name: The per-window P&L from Drive
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.backtests }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          mkdir -p "$RUNNER_TEMP/in"
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/${{ github.run_id }}/windows" "$RUNNER_TEMP/in" || rc=$?
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || twin_fail "reading the backtest legs' per-window P&L from Drive failed (rclone exit $rc)"
+          [ "$rc" -ne 3 ] || echo "[twin] no per-window P&L on Drive for run ${{ github.run_id }}: every backtest part failed" | tee -a "$TWIN_LOG"
+      # A run whose backtest matrix has ANY red job, or whose four sources do not each hold a per-window file for every judged
+      # day, is NOT a verdict: outcome() takes the union of the windows and counts a missing window as P&L 0, so a lost twin or
+      # real part would read as a simulator defect (sameActivity, noBias) and a lost placebo part would loosen check 3. The
+      # guard fails the job with a '[twin] ERROR' line before any PASS/FAIL for checks 2-4 is printed (the AUC of check 1 does
+      # not need the legs: a re-verdict of the run, reverdict_run, reads it). On the confirm split only day-file counts print
+      # from the guard: a window count per source is check 4's own quantity, so those lines carry none. The verdict stage itself
+      # gives ok/no for checks 1, 2 and 4 and, for the amended check 3 (J1), counts and p-values: the stop-out and traded-window
+      # counts of each side (kR/nR, kT/nT) and the two p-values per source, and the caveat line's N and K; nothing per window
+      # (RUNBOOK 3.9).
+      - name: Verdict
+        env:
+          LOOK_N: ${{ needs.build.outputs.look }}
+          LOOK_NOTE: ${{ inputs.confirm_look_note }}
+          BACKTESTS: ${{ inputs.backtests }}
+          BT_RESULT: ${{ needs.backtest.result }}
+          JUDGED: ${{ needs.build.outputs.days }}
+          SPLIT: ${{ needs.build.outputs.split }}
+          FAST: ${{ needs.build.outputs.fast }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          VERDICT_T0=$(date +%s)
+          if [ "$BACKTESTS" = true ]; then
+            rc=0
+            python3 .github/scripts/twin-windows.py "$RUNNER_TEMP/in" data/twin "$SPLIT" "$JUDGED" "$RUNNER_TEMP/legs.txt" | tee -a "$TWIN_LOG" || rc=$?
+            # exit 3 = the legs' files are incomplete; any other non-zero exit = the script itself did not run to its end (2 = bad arguments or the file is not
+            # on this ref, 1 = it crashed, 127 = no python3): its own message, so a reader does not look for a lost leg that is not lost
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+              twin_fail "twin-windows.py failed (exit $rc; 2 = bad arguments or the file is not on this ref, see RUNBOOK 3.0 check 1d): the legs' per-window P&L was not assembled and no PASS/FAIL is printed. Fix the cause, then re-verdict this run (reverdict_run): nothing needs rebuilding"
+            fi
+            if [ "$BT_RESULT" != success ] || [ "$rc" -ne 0 ]; then
+              twin_fail "backtest legs incomplete (backtest jobs: $BT_RESULT; per-window day files real/placebo/requote/depth = $(cat "$RUNNER_TEMP/legs.txt" 2>/dev/null || echo '?')): checks 2-4 are not valid and no PASS/FAIL is printed. Re-dispatch once (the same failure twice: stop and write a note); check 1 alone is readable by a re-verdict of this run (reverdict_run)"
+            fi
+          fi
+          LOOK=(); [ -z "$LOOK_NOTE" ] || LOOK=(--confirm-look "$LOOK_N" --confirm-look-note "$LOOK_NOTE")
+          node --import tsx research/historyTwin.ts --stage verdict --out data/twin "${LOOK[@]}" 2>&1 | tee -a "$RUNNER_TEMP/verdict.log" | grep -E '^\[twin\]|Error'
+          [ "${FAST:-}" != true ] || echo "[twin] fast: verdict $(( $(date +%s) - VERDICT_T0 )) s" | tee -a "$RUNNER_TEMP/verdict.log"
           python3 - <<'PY' | tee -a "$RUNNER_TEMP/verdict.log"
           import json
           r = json.load(open('data/twin/verdict.json'))
           for p in r['paired']:
               print(f"{p['day']}: both {p['both']}, missing {p['onlyReal15m']}, quote off {p['quoteMaeC']:.2f}c, index off {p['indexMaeBps']:.1f} bps, results {p['resultsAgree']}/{p['results']}")
           PY
+      # R3a (RUNBOOK 3.5): where the twin's extra entries come from, read from the per-position files the dev and custom legs kept on Drive beside their
+      # per-window files (the folder the step "The per-window P&L from Drive" read). REPORT ONLY: counts, never part of the pass or fail, never a failure of
+      # this job (continue-on-error, a time limit, and every exit swallowed), nothing on the confirm split, and a comment of its own so it cannot push the
+      # verdict's comment over GitHub's size limit. A run made before R3a has no such files: the script says so in one line.
+      - name: The per-position report (R3a, report only)
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.backtests && needs.build.outputs.split != 'confirm' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPLIT: ${{ needs.build.outputs.split }}
+          JUDGED: ${{ needs.build.outputs.days }}
+        run: |
+          set -uo pipefail
+          [ "$SPLIT" != confirm ] || exit 0
+          [ -f .github/scripts/twin-positions.py ] || { echo "[twin] positions report: .github/scripts/twin-positions.py is not on this ref (RUNBOOK 3.0 check 1e), so there is no report"; exit 0; }
+          L="$RUNNER_TEMP/positions.log"
+          timeout 120 python3 .github/scripts/twin-positions.py "$RUNNER_TEMP/in" "${{ github.run_id }}" --split "$SPLIT" --judged "$JUDGED" > "$L" 2>&1 || true
+          cat "$L"
+          # only the report's own lines go in the comment, and not the one line that says there is nothing to report
+          grep '^\[twin\]' "$L" | grep -v '^\[twin\] no per-position files' > "$RUNNER_TEMP/positions.txt" || true
+          if [ -s "$RUNNER_TEMP/positions.txt" ]; then
+            { echo "History twin positions, run ${{ github.run_id }}"; echo; echo '```'; head -c 60000 "$RUNNER_TEMP/positions.txt" | cut -c1-400; echo '```'; } > "$RUNNER_TEMP/positions.md"
+            gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/positions.md" --silent || echo "could not post the comment"
+          fi
+          exit 0
       - name: Report (commit comment)
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "History twin verdict, run ${{ github.run_id }} (${{ job.status }})"; echo; echo '```'; cut -c1-500 "$RUNNER_TEMP/verdict.log" 2>/dev/null | grep -v '^\[twin\] features'; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          L="$RUNNER_TEMP/verdict.log"
+          {
+            echo "History twin verdict, run ${{ github.run_id }} (${{ job.status }})"; echo; echo '```'
+            if [ -s "$L" ]; then cut -c1-500 "$L" | grep -v '^\[twin\] features' || true
+            else
+              S=""; if [ -f .github/scripts/twin-lib.sh ]; then source .github/scripts/twin-lib.sh; S=$(twin_failed_steps "${{ github.run_id }}" "${{ github.repository }}" '^verdict$' | cut -f2 | head -1); fi
+              echo "(no [twin] lines: the verdict job failed before its Verdict step${S:+, at step \"$S\"}; the reason is an annotation of the run: gh run view ${{ github.run_id }})"
+            fi
+            echo '```'
+          } > "$RUNNER_TEMP/comment.md"
           gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
 
   reverdict:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reverdict_run != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prep_days == '' && inputs.reverdict_run != '' && inputs.sweep_gen == '' }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 30
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -427,31 +1502,424 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
+      # The judged files of the run (lite cache, else Drive), then the legs' per-window P&L (Drive; a run without backtests has none), and ONLY THEN the
+      # Verdict step, which is where a confirm look is numbered (twin-look.sh): every step that can fail for want of data comes before it, so a failure
+      # for want of data never burns a blind look. A miss of the cache is not a failure (Drive has the files); neither of them is: one failing line, before anything is read.
       - uses: actions/cache/restore@v4
         with:
           path: data/twinlite
           key: history-twin-lite-${{ inputs.reverdict_run }}
-      - name: Drive setup (the cache was evicted)
-        if: hashFiles('data/twinlite/paired.json') == ''
+      - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
-      - name: The judged features from Drive
+      - name: The judged features from Drive (the cache was evicted)
         if: hashFiles('data/twinlite/paired.json') == ''
         env:
           RUN: ${{ inputs.reverdict_run }}
         run: |
-          [[ "$RUN" =~ ^[0-9]+$ ]] || { echo "reverdict_run must be a run id"; exit 1; }
-          bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/twinlite || { echo "::error::run $RUN's features are neither cached nor on Drive"; exit 1; }
-      - name: Verdict
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "reverdict_run must be a run id"
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/twinlite || rc=$?
+          [ "$rc" -eq 0 ] || twin_fail "run $RUN's features are neither cached nor on Drive (simulated/history-twin/$RUN/twinlite; drive_lab.sh get exit $rc, 3 = nothing there): nothing was read and no look was numbered"
+      - name: The judged features in place
+        env:
+          RUN: ${{ inputs.reverdict_run }}
         run: |
           set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "reverdict_run must be a run id"
+          MISS=""; for f in paired.json features-real.json; do [ -s "data/twinlite/$f" ] || MISS="$MISS $f"; done
+          [ -z "$MISS" ] || twin_fail "the judged features of run $RUN are not whole (missing:$MISS): nothing was read and no look was numbered"
           mkdir -p data/twin && cp data/twinlite/* data/twin/
-          node --import tsx research/historyTwin.ts --stage verdict --out data/twin 2>&1 | tee "$RUNNER_TEMP/verdict.log" | grep '^\[twin\]'
+          rm -f data/twin/windows-*.json
+      # Checks 2-4 again, from the legs' per-window P&L that THIS run's backtest legs kept on Drive. A run without backtests (or a fast one) has none: rclone
+      # exit 3 is not a failure, checks 2-4 are simply not re-read and the verdict is check 1 as before. The days are the judged days of the run's own split.json
+      # (never an input, never another run's), the assembly and its completeness guard are the verdict job's own script, and an INCOMPLETE set copies nothing
+      # (outcome() counts a missing window as P&L 0 and a lost part would read as a simulator defect). On a confirm split only day-file counts print.
+      - name: The legs' per-window P&L from Drive (checks 2-4, when the run kept them)
+        env:
+          RUN: ${{ inputs.reverdict_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "reverdict_run must be a run id"
+          mkdir -p "$RUNNER_TEMP/in"
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/windows" "$RUNNER_TEMP/in" || rc=$?
+          if [ "$rc" -eq 3 ]; then
+            echo "[twin] no per-window P&L on Drive for run $RUN: checks 2-4 are not re-read" | tee -a "$TWIN_LOG"
+            exit 0
+          fi
+          [ "$rc" -eq 0 ] || twin_fail "reading the per-window P&L of run $RUN from Drive failed (rclone exit $rc): nothing was read and no look was numbered"
+          if [ ! -s data/twin/split.json ]; then
+            echo "[twin] WARNING: run $RUN's judged files have no split.json, so its judged days are not known: checks 2-4 are not re-read" | tee -a "$TWIN_LOG"
+            exit 0
+          fi
+          SPLIT=$(python3 -c "import json; print(json.load(open('data/twin/split.json'))['name'])") || twin_fail "run $RUN's split.json has no name: nothing was read and no look was numbered"
+          JUDGED=$(python3 -c "import json; print(','.join(json.load(open('data/twin/split.json'))['judge']))") || twin_fail "run $RUN's split.json has no judge list: nothing was read and no look was numbered"
+          # twin-windows.py's exit code: 0 = whole, 3 = incomplete (the ONLY case that degrades to check 1), anything else = the script did not run to its end
+          # (2 = bad arguments or the file is not on this ref, 1 = it crashed, 127 = no python3): that says nothing about the legs' files, so it fails here,
+          # before the Verdict step, and a confirm look is not numbered. The look would otherwise be spent on a verdict that reads check 1 only by accident.
+          rc=0
+          python3 .github/scripts/twin-windows.py "$RUNNER_TEMP/in" "$RUNNER_TEMP/win" "$SPLIT" "$JUDGED" "$RUNNER_TEMP/legs.txt" | tee -a "$TWIN_LOG" || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            cp "$RUNNER_TEMP"/win/windows-*.json data/twin/
+            echo "[twin] the per-window P&L on Drive for run $RUN is whole: checks 2-4 are re-read" | tee -a "$TWIN_LOG"
+          elif [ "$rc" -eq 3 ]; then
+            echo "[twin] WARNING: the per-window P&L on Drive for run $RUN is incomplete (real/placebo/requote/depth = $(cat "$RUNNER_TEMP/legs.txt" 2>/dev/null || echo '?') judged day(s)): checks 2-4 are not re-read" | tee -a "$TWIN_LOG"
+          else
+            twin_fail "twin-windows.py failed (exit $rc; 2 = bad arguments or the file is not on this ref, see RUNBOOK 3.0 check 1d): the legs' per-window P&L of run $RUN was not assembled, nothing was read and no look was numbered"
+          fi
+      # Reading a confirm run's rows again is another look: it needs a note and is numbered and logged like the first. Everything the verdict needs is in place
+      # above; the numbering is the first thing this step does after it has the split's name.
+      - name: Verdict
+        env:
+          LOOK_NOTE: ${{ inputs.confirm_look_note }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          SPLIT=$(python3 -c "import json; print(json.load(open('data/twin/split.json'))['name'])" 2>/dev/null || echo custom)
+          LOOK=()
+          if [ "$SPLIT" = confirm ]; then
+            # (the verdict stage itself also refuses a blind verdict without its note; this fails before anything is read)
+            CLEAN=$(printf '%s' "$LOOK_NOTE" | tr '\000-\037\177' ' ' | sed -E 's/^ +//; s/ +$//')
+            [ -n "$CLEAN" ] || twin_fail "a re-verdict of a confirm run is another look at the confirm days: pass confirm_look_note"
+            N=$(bash .github/scripts/twin-look.sh "$LOOK_NOTE")
+            LOOK=(--confirm-look "$N" --confirm-look-note "$LOOK_NOTE")
+          fi
+          node --import tsx research/historyTwin.ts --stage verdict --out data/twin "${LOOK[@]}" 2>&1 | tee -a "$RUNNER_TEMP/verdict.log" | grep -E '^\[twin\]|Error'
+      # R3a (RUNBOOK 3.5): the per-position report of the run being re-read, after its verdict (the folder the legs' windows step read, so the same Drive tree).
+      # REPORT ONLY and numbering nothing: counts, never part of the pass or fail, never a failure of this job (continue-on-error, a time limit, every exit
+      # swallowed), dev and custom only (a confirm split's report is skipped without a word, and so is a run whose split is not on record), a comment of its
+      # own. A run made before R3a, or one that kept no windows, has no such files: the script says so in one line.
+      - name: The per-position report (R3a, report only)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.reverdict_run }}
+        run: |
+          set -uo pipefail
+          [ -s data/twin/split.json ] || exit 0
+          SPLIT=$(python3 -c "import json; print(json.load(open('data/twin/split.json'))['name'])" 2>/dev/null || echo '')
+          [ -n "$SPLIT" ] && [ "$SPLIT" != confirm ] || exit 0
+          JUDGED=$(python3 -c "import json; print(','.join(json.load(open('data/twin/split.json'))['judge']))" 2>/dev/null || echo '')
+          [ -f .github/scripts/twin-positions.py ] || { echo "[twin] positions report: .github/scripts/twin-positions.py is not on this ref (RUNBOOK 3.0 check 1e), so there is no report"; exit 0; }
+          L="$RUNNER_TEMP/positions.log"
+          timeout 120 python3 .github/scripts/twin-positions.py "$RUNNER_TEMP/in" "$RUN" --split "$SPLIT" --judged "$JUDGED" > "$L" 2>&1 || true
+          cat "$L"
+          # only the report's own lines go in the comment, and not the one line that says there is nothing to report
+          grep '^\[twin\]' "$L" | grep -v '^\[twin\] no per-position files' > "$RUNNER_TEMP/positions.txt" || true
+          if [ -s "$RUNNER_TEMP/positions.txt" ]; then
+            { echo "History twin positions of run $RUN (re-verdict run ${{ github.run_id }})"; echo; echo '```'; head -c 60000 "$RUNNER_TEMP/positions.txt" | cut -c1-400; echo '```'; } > "$RUNNER_TEMP/positions.md"
+            gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/positions.md" --silent || echo "could not post the comment"
+          fi
+          exit 0
       - name: Report (commit comment)
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "History twin re-verdict of run ${{ inputs.reverdict_run }} (run ${{ github.run_id }}, ${{ job.status }})"; echo; echo '```'; cut -c1-1500 "$RUNNER_TEMP/verdict.log" 2>/dev/null | grep -v '^\[twin\] features'; echo '```'; } > "$RUNNER_TEMP/comment.md"
-          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
+          L="$RUNNER_TEMP/verdict.log"
+          {
+            echo "History twin re-verdict of run ${{ inputs.reverdict_run }} (run ${{ github.run_id }}, ${{ job.status }})"; echo; echo '```'
+            if [ -s "$L" ]; then cut -c1-1500 "$L" | grep -v '^\[twin\] features' || true
+            else
+              S=""; if [ -f .github/scripts/twin-lib.sh ]; then source .github/scripts/twin-lib.sh; S=$(twin_failed_steps "${{ github.run_id }}" "${{ github.repository }}" '^reverdict$' | cut -f2 | head -1); fi
+              echo "(no [twin] lines: the re-verdict job failed before its Verdict step${S:+, at step \"$S\"}; the reason is an annotation of the run: gh run view ${{ github.run_id }})"
+            fi
+            echo '```'
+          } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
+
+  # ------------------------------------------------------------------------------------------------------------------
+  # SWEEP (sweep_gen): the depth simulator's constants, fitted by a machine optimizer on the FIT days only, with the judge as the
+  # objective. Never reads a DEV or CONFIRM day. See the header (8) and RUNBOOK 'The depth simulator sweep'.
+  sweep-plan:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.sweep_gen != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # contents: write only for the failure comment below (a refused dispatch skips the shards and the collect job is not reached).
+    permissions:
+      contents: write
+    outputs:
+      gen: ${{ steps.p.outputs.gen }}
+      shards: ${{ steps.p.outputs.shards }}
+      shard_count: ${{ steps.p.outputs.shard_count }}
+      per: ${{ steps.p.outputs.per }}
+      parents: ${{ steps.p.outputs.parents }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Which generation
+        id: p
+        env:
+          SWEEP_GEN: ${{ inputs.sweep_gen }}
+          CANDIDATES: ${{ inputs.sweep_candidates }}
+          SHARDS: ${{ inputs.sweep_shards }}
+          PARENTS_RUN: ${{ inputs.sweep_parents_run }}
+          PREP_DAYS: ${{ inputs.prep_days }}
+          REVERDICT_RUN: ${{ inputs.reverdict_run }}
+          SPLIT: ${{ inputs.split || 'dev' }}
+          DEPTH_PARAMS_RUN: ${{ inputs.depth_params_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/plan.log"
+          [ -z "$PREP_DAYS" ] && [ -z "$REVERDICT_RUN" ] || twin_fail "sweep_gen is exclusive with prep_days and reverdict_run: dispatch the sweep on its own"
+          [ "$SPLIT" = dev ] || twin_fail "a sweep reads the dev split's FIT days only: split=$(printf '%.20s' "$SPLIT" | tr -c '0-9A-Za-z-' '?') is refused (leave split at dev)"
+          [ -z "$DEPTH_PARAMS_RUN" ] || twin_fail "depth_params_run belongs to a normal dev dispatch, not to a sweep"
+          [[ "$SWEEP_GEN" =~ ^[0-9]{1,2}$ ]] || twin_fail "sweep_gen must be a whole number from 0 to 99 (0 is the first generation), got '$(printf '%.20s' "$SWEEP_GEN" | tr -c '0-9A-Za-z-' '?')'"
+          GEN=$((10#$SWEEP_GEN))
+          [[ "$CANDIDATES" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$CANDIDATES))" -ge 1 ] && [ "$((10#$CANDIDATES))" -le 500 ] || twin_fail "sweep_candidates (per shard) must be a whole number from 1 to 500, got '$(printf '%.20s' "$CANDIDATES" | tr -c '0-9A-Za-z-' '?')'"
+          PER=$((10#$CANDIDATES))
+          [[ "$SHARDS" =~ ^[0-9]$ ]] && [ "$SHARDS" -ge 1 ] && [ "$SHARDS" -le 7 ] || twin_fail "sweep_shards must be a whole number from 1 to 7 (one runner each, at most 7 at once), got '$(printf '%.20s' "$SHARDS" | tr -c '0-9A-Za-z-' '?')'"
+          if [ "$GEN" -eq 0 ]; then
+            [ -z "$PARENTS_RUN" ] || twin_fail "sweep_parents_run is for generation 1 and later (generation 0 starts from the defaults)"
+          else
+            [[ "$PARENTS_RUN" =~ ^[0-9]+$ ]] || twin_fail "generation $GEN needs sweep_parents_run (the run id of generation $((GEN - 1)), a sweep whose collect job finished)"
+          fi
+          { echo "gen=$GEN"; echo "per=$PER"; echo "shard_count=$SHARDS"; echo "parents=$PARENTS_RUN"
+            echo "shards=$(seq 0 $((SHARDS - 1)) | jq -R 'tonumber' | jq -sc .)"; } >> "$GITHUB_OUTPUT"
+          echo "[twin] sweep plan: generation $GEN, $SHARDS shard(s) x $PER candidate(s) = $((SHARDS * PER)) candidate(s) on the FIT days only${PARENTS_RUN:+, parents from run $PARENTS_RUN}"
+      - name: Report a refused sweep dispatch (commit comment)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "History twin sweep plan, run ${{ github.run_id }} (${{ job.status }}), on commit ${GITHUB_SHA:0:8}: no sweep ran"; echo; echo '```'
+            if [ -s "$RUNNER_TEMP/plan.log" ]; then cut -c1-300 "$RUNNER_TEMP/plan.log"; else echo "(no [twin] ERROR line: the plan failed before it checked the inputs; read the run's annotations: gh run view ${{ github.run_id }})"; fi
+            echo '```'; } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
+
+  # One shard: its slice of the generation's candidates. Each shard fits the depth model once, on the FIT days only, and holds the
+  # real FIT rows and the requote FIT days in memory for all its candidates.
+  sweep:
+    needs: sweep-plan
+    if: ${{ needs.sweep-plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        shard: ${{ fromJSON(needs.sweep-plan.outputs.shards) }}
+    env:
+      GEN: ${{ needs.sweep-plan.outputs.gen }}
+      SHARDS: ${{ needs.sweep-plan.outputs.shard_count }}
+      PER: ${{ needs.sweep-plan.outputs.per }}
+      PARENTS_RUN: ${{ needs.sweep-plan.outputs.parents }}
+      SHARD: ${{ matrix.shard }}
+      # The dev split's FIT days (held to research/historyTwin.ts SPLITS.dev.fit by a test): the only days a sweep reads.
+      FIT: 2026-11-11,2026-11-12,2026-11-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: The job's clock (the sweep stops starting candidates before the timeout)
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      # The prepped real FIT days only (derived/twin-real15m): a missing one names the prep dispatch to run.
+      - name: The real 15-minute FIT days from Drive (derived/twin-real15m)
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          mkdir -p data/twin-real15m
+          MISSING=""
+          for d in ${FIT//,/ }; do
+            T="$RUNNER_TEMP/r15/$d"; mkdir -p "$T"
+            rc=0; bash deploy/drive_lab.sh get "derived/twin-real15m/$d" "$T" || rc=$?
+            { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || twin_fail "reading derived/twin-real15m/$d on Drive failed (rclone exit $rc)"
+            if [ "$rc" -eq 0 ] && [ -s "$T/md-$d.jsonl.gz" ] && [ -s "$T/meta.json" ]; then
+              mv "$T/md-$d.jsonl.gz" data/twin-real15m/ && mv "$T/meta.json" "data/twin-real15m/meta-$d.json" || twin_fail "could not place the cached day $d"
+            else MISSING="$MISSING $d"; fi
+          done
+          if [ -n "$MISSING" ]; then
+            LIST=$(printf '%s\n' $MISSING | sort -u | paste -sd, -)
+            twin_fail "real 15-minute FIT days missing on Drive (derived/twin-real15m): $LIST. Dispatch this workflow with prep_days=$LIST first, then run the sweep again."
+          fi
+          echo "[twin] real 15-minute FIT days from Drive: $(ls data/twin-real15m | grep -c '^md-') day(s)" | tee -a "$RUNNER_TEMP/build.log"
+          node --import tsx research/historyTwin.ts --stage real15m-check --dir data/twin-real15m --days "$FIT" 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+      # Requote FIT days: Drive's simulated/kalshi-replay-200d while its replay-manifest.json version is REPLAY_VERSION, else
+      # regenerated with research/kalshiReplayData.ts (as the build job does; every shard then regenerates: refresh the Drive copy
+      # first when that is the case).
+      - name: The requote FIT days (Drive, else regenerated)
+        id: twinsrc
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          D=data/replay-drive; mkdir -p "$D" data/replay-src data/twin
+          ARGS=(--include replay-manifest.json)
+          for d in ${FIT//,/ }; do ARGS+=(--include "md-$d.jsonl.gz"); done
+          rc=0; bash deploy/drive_lab.sh get simulated/kalshi-replay-200d "$D" "${ARGS[@]}" || rc=$?
+          { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || twin_fail "reading simulated/kalshi-replay-200d on Drive failed (rclone exit $rc)"
+          node --import tsx research/historyTwin.ts --stage twin-source --dir "$D" --days "$FIT" --out data/twin 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+          for d in $(tr ',' ' ' < data/twin/drive-days.txt); do cp "$D/md-$d.jsonl.gz" data/replay-src/; done
+          echo "regen=$(cat data/twin/regen-days.txt)" >> "$GITHUB_OUTPUT"
+      - name: Restore the Kalshi history and its replay (to regenerate days)
+        if: ${{ steps.twinsrc.outputs.regen != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/history
+            data/history-replay
+          key: kalshi-replay-sweep-${{ github.run_id }}-${{ matrix.shard }}
+          restore-keys: kalshi-replay-
+      - name: Regenerate the requote FIT days Drive lacks (Binance + Kalshi public history, the deep history's own pipeline)
+        if: ${{ steps.twinsrc.outputs.regen != '' }}
+        env:
+          REGEN: ${{ steps.twinsrc.outputs.regen }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          FIRST=$(printf '%s\n' ${REGEN//,/ } | sort | head -1)
+          BACK=$(( ( $(date -u +%s) - $(date -u -d "$FIRST" +%s) ) / 86400 + 2 ))
+          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$BACK" --budget-min 120 2>&1 | tee -a "$RUNNER_TEMP/build.log" \
+            | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -20
+          for d in ${REGEN//,/ }; do
+            [ -s "data/history-replay/md-$d.jsonl.gz" ] || twin_fail "the regenerated replay has no day $d (Binance + Kalshi public history did not cover it within the 120-minute budget)"
+            cp "data/history-replay/md-$d.jsonl.gz" data/replay-src/
+          done
+          echo "[twin] requote FIT days regenerated: $(echo "${REGEN//,/ }" | wc -w) day(s)" | tee -a "$RUNNER_TEMP/build.log"
+      - name: The previous generation's elite (generations 1 and later)
+        if: ${{ needs.sweep-plan.outputs.gen != '0' }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          [[ "$PARENTS_RUN" =~ ^[0-9]+$ ]] || twin_fail "sweep_parents_run must be a run id"
+          mkdir -p data/sweep-parents
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin-sweep/$PARENTS_RUN" data/sweep-parents --include elite.json || rc=$?
+          [ "$rc" -ne 3 ] || twin_fail "no sweep on Drive for run $PARENTS_RUN (simulated/history-twin-sweep/$PARENTS_RUN): is it the run id of generation $((GEN - 1)), with its collect job finished?"
+          [ "$rc" -eq 0 ] || twin_fail "reading simulated/history-twin-sweep/$PARENTS_RUN on Drive failed (rclone exit $rc)"
+          [ -s data/sweep-parents/elite.json ] || twin_fail "run $PARENTS_RUN has no elite.json on Drive: its collect job did not finish"
+          echo "[twin] parents: elite.json of sweep run $PARENTS_RUN" | tee -a "$RUNNER_TEMP/build.log"
+      # Once per shard, on the FIT days only (the same fit as the build job's; the sweep stage then asserts the model's own record
+      # of its days against the dev split).
+      - name: Fit the depth model on the FIT days only (once per shard)
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          mkdir -p data/fit data/models
+          for d in ${FIT//,/ }; do ln -sf "$GITHUB_WORKSPACE/data/twin-real15m/md-$d.jsonl.gz" data/fit/; done
+          rc=0; node --import tsx research/depthStudy.ts --recordings data/fit --days "$FIT" --series 15m --out data/models/depth_model.json > "$RUNNER_TEMP/depth.log" 2>&1 || rc=$?
+          grep -E '^\[depth\]' "$RUNNER_TEMP/depth.log" | sed -E 's/^\[depth\]/[twin] depth model:/' | cut -c1-300 | head -5 | tee -a "$RUNNER_TEMP/build.log" || true
+          if [ "$rc" -ne 0 ] || [ ! -s data/models/depth_model.json ]; then
+            twin_fail "depth fit failed (exit $rc) on the fit days $FIT; last lines: $(tail -8 "$RUNNER_TEMP/depth.log" | cut -c1-200 | tr '\n' '|')"
+          fi
+      - name: Judge this shard's candidates on the FIT days
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          # Stop starting candidates 25 minutes before the job's timeout (340): what was judged is kept and the shard says it is incomplete.
+          BUDGET=$(( 315 - ($(date +%s) - JOB_START) / 60 ))
+          [ "$BUDGET" -ge 5 ] || twin_fail "no time left for the sweep: the steps before it took $(( ($(date +%s) - JOB_START) / 60 )) minutes of the 340"
+          PAR=(); [ "$GEN" -eq 0 ] || PAR=(--parents data/sweep-parents/elite.json)
+          mkdir -p data/sweep
+          node --import tsx research/historyTwin.ts --stage sweep --split dev --fit-days "$FIT" --twin-requote data/replay-src --real data/twin-real15m \
+            --depth-model data/models/depth_model.json --gen "$GEN" --shard "$SHARD/$SHARDS" --candidates "$PER" "${PAR[@]}" --budget-min "$BUDGET" --out data/sweep 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+      # Copy only. Kept even when the stage failed or was cut off (a shard file is rewritten after every candidate).
+      - name: Keep this shard's results on Drive (simulated/history-twin-sweep; copy only)
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if ls data/sweep/sweep-g*-shard*.json > /dev/null 2>&1; then
+            bash deploy/drive_lab.sh put "simulated/history-twin-sweep/${{ github.run_id }}/shards" data/sweep --include 'sweep-g*-shard*.json'
+          else echo "no shard file to keep (the stage did not get as far as its first candidate)"; fi
+
+  # The merge: every shard's results from Drive (a missing shard or candidate refuses the generation unless sweep_partial), the
+  # top 5 printed (numbers only), best.json and elite.json (and results.json) kept on Drive, and the exact next dispatches.
+  sweep-collect:
+    needs: [sweep-plan, sweep]
+    if: ${{ always() && needs.sweep-plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Merge the shards, keep best.json and elite.json on Drive, and report (commit comment)
+        env:
+          GEN: ${{ needs.sweep-plan.outputs.gen }}
+          SHARDS: ${{ needs.sweep-plan.outputs.shard_count }}
+          PER: ${{ needs.sweep-plan.outputs.per }}
+          SWEEP_RESULT: ${{ needs.sweep.result }}
+          PARTIAL: ${{ inputs.sweep_partial }}
+          RUN: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          source .github/scripts/twin-lib.sh
+          export TWIN_LOG="$RUNNER_TEMP/collect.log"
+          S="$RUNNER_TEMP/shards"; O="$RUNNER_TEMP/collected"; mkdir -p "$S" "$O"
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin-sweep/$RUN/shards" "$S" || rc=$?
+          { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || echo "[twin] ERROR: reading the shard results from Drive failed (rclone exit $rc)" >> "$TWIN_LOG"
+          [ "$rc" -ne 3 ] || echo "[twin] ERROR: no shard results on Drive for run $RUN: every shard failed before its first candidate" >> "$TWIN_LOG"
+          # Where each failed shard stopped (its reason is an annotation of the run: gh run view RUN). Never fails the report.
+          twin_failed_steps "$RUN" "$REPO" '^sweep \(' | cut -c1-200 | sed 's/^/[twin] shard job failed: /' >> "$TWIN_LOG" || true
+          PART=(); [ "$PARTIAL" != true ] || PART=(--partial)
+          ok=0
+          node --import tsx research/historyTwin.ts --stage sweep-collect --dir "$S" --gen "$GEN" --shards "$SHARDS" --candidates "$PER" --out "$O" "${PART[@]}" >> "$TWIN_LOG" 2>&1 || ok=$?
+          if [ "$ok" -eq 0 ] && [ -s "$O/best.json" ] && [ -s "$O/elite.json" ]; then
+            bash deploy/drive_lab.sh put "simulated/history-twin-sweep/$RUN" "$O" --include best.json --include elite.json --include results.json || echo "[twin] ERROR: keeping best.json and elite.json on Drive failed"  >> "$TWIN_LOG"
+            { echo "[twin] kept on Drive: simulated/history-twin-sweep/$RUN/{best,elite,results}.json (shard jobs: $SWEEP_RESULT)"
+              echo "[twin] NEXT GENERATION: gh workflow run history-twin.yml -R $REPO --ref $REF -f sweep_gen=$((GEN + 1)) -f sweep_parents_run=$RUN -f sweep_candidates=$PER -f sweep_shards=$SHARDS"
+              echo "[twin] DEV VERDICT of this generation's best: gh workflow run history-twin.yml -R $REPO --ref $REF -f split=dev -f depth_params_run=$RUN"
+              # The same verdict on the fast route (RUNBOOK 3.2.1: about 1 h, not 4 h 16 min). depth_params_run is THIS sweep's run id; real_features_run and
+              # depth_model_run are BUILD run ids (an earlier dev or custom run of this code), both optional: the first fast run leaves them out.
+              echo "[twin] DEV VERDICT, fast (RUNBOOK 3.2.1, about 1 h): gh workflow run history-twin.yml -R $REPO --ref $REF -f split=dev -f fast=true -f depth_params_run=$RUN [-f real_features_run=BUILD_RUN -f depth_model_run=BUILD_RUN]"; } >> "$TWIN_LOG"
+          else
+            echo "[twin] ERROR: the sweep was not collected (shard jobs: $SWEEP_RESULT); nothing was kept as best.json or elite.json"  >> "$TWIN_LOG"
+            # A generation that is not whole: what to do, with this run's id. A red shard job re-runs under the same run id; a green job that
+            # stopped at its budget is incomplete too and re-running it fails the same way; sweep_partial is read by the dispatch that runs the shards.
+            if grep -qE 'is not complete|candidates are missing|no result file' "$TWIN_LOG"; then
+              { echo "[twin] RECOVER, a shard job that crashed or timed out (red job): gh run rerun $RUN -R $REPO --failed (same run id, same candidates; the collect job runs again after it)"
+                echo "[twin] RECOVER, a shard that stopped at its budget (green job, incomplete; the lines above name it): a re-run fails the same way. Dispatch the generation again with fewer sweep_candidates (now $PER per shard), or with sweep_partial=true, which the dispatch that runs the shards must carry."
+                echo "[twin] RECOVER, there is no way to re-collect a finished run as partial."; } >> "$TWIN_LOG"
+            fi
+          fi
+          { echo "History twin sweep, generation $GEN, run $RUN (shard jobs: $SWEEP_RESULT, collect: $([ "$ok" -eq 0 ] && echo done || echo failed)), on commit ${SHA:0:8}"; echo; echo '```'; cut -c1-800 "$TWIN_LOG"; echo '```'; } > "$RUNNER_TEMP/comment.md"  # 800: the 'best params exact' line holds 13 numbers with every digit and must not be cut
+          cat "$TWIN_LOG"
+          gh api -X POST "repos/$REPO/commits/$SHA/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
+          exit "$ok"

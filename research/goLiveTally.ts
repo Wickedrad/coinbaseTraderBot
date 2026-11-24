@@ -25,7 +25,8 @@ import { hashStr, normals } from './history/historyReplay';
 import { repriceRow, rowWeights } from './trainMetaModel';
 import { readJson } from '../bot/util/persist';
 import { recordingLines } from '../bot/marketdata/recordingFiles';
-import { DepthSim, readDepthModel, type DepthModel } from './history/depthSim';
+import { DepthSim, readDepthModel, modelSchema, type DepthModel, type DepthSimParams } from './history/depthSim';
+import { DEPTH_MODEL_SCHEMA } from './history/depthModelVersion';
 import { bootstrapMeanCi, deflatedSharpe, dieboldMariano } from './stats';
 
 /** Results older than this before the newest are dropped: a year of windows is about 3 MB. */
@@ -203,9 +204,52 @@ export function quoteFiller(fill: QuoteFill): (e: Ev) => Ev | undefined {
 /** Every depth fill-in made in this process (their stats: what the simulator emitted). */
 export const depthSims: DepthSim[] = [];
 
+/** The `[twin]` line that says which depth model a fill-in plays: its schema and the assets it has blocks for (counts and names only). A model with
+ *  no asset block is the pooled tables of before schema 2: a WARNING line instead, because it is what a stale depth study on the dispatched ref
+ *  writes (the books then come from the pooled rows, not per asset or per stress, and nothing else in the run says so). */
+export function depthModelNote(depth: DepthModel): string {
+  const assets = Object.keys(depth.byAsset ?? {});
+  return assets.length
+    ? `[twin] depth model schema ${modelSchema(depth)}, assets ${assets.join(' ')}`
+    : `[twin] WARNING: the depth model is pooled only (schema ${modelSchema(depth)}): no asset or stress rows, every book comes from the pooled rows (the depth study on this ref may be an old copy)`;
+}
+
+/** The `[twin]` line that says which per-asset calibration (research/history/depthCalibrate.ts, schema 3) a fill-in plays: the multipliers of each asset
+ *  and the FIT days and iterations it was fitted with; undefined for a model without one (it plays as measured). Numbers and names only. */
+export function depthCalibrationNote(depth: DepthModel): string | undefined {
+  const c = depth.calibration;
+  if (!c) return undefined;
+  const r = (x: number) => String(+x.toFixed(2));
+  const assets = Object.entries(c.byAsset).map(([a, m]) => `${a} (top ${r(m.topSizeMult)} level ${r(m.levelSizeMult)} size ${r(m.tradeSizeMult)} trades ${r(m.tradeRateMult)} flick ${r(m.flickMult)})`);
+  return `[twin] depth model calibration: ${assets.join(', ') || 'no asset'}; fitted on the FIT days ${c.fitDays.join(' ')}, ${c.iterations} iteration(s)`;
+}
+
+/** Which rows fed a simulator's books, as plain numbers (DepthSim.picks and DepthSim.unblocked): quarter-minutes drawn from the asset's stress-0/1/2 row, from
+ *  its row over all stress, from a pooled row it backed off to, and from the pooled rows because the model had no block for the asset. */
+export interface DepthPicks { stress: number[]; asset: number; pooled: number; unblocked: number }
+export const picksOf = (sim: Pick<DepthSim, 'picks' | 'unblocked'>): DepthPicks => ({ stress: [...sim.picks.stress], asset: sim.picks.asset, pooled: sim.picks.pooled, unblocked: sim.unblocked.anchors });
+
+/** What the day's books were drawn from, summed (counts only): quarter-minutes by the stress row of their asset, by the asset's own row, and by a pooled
+ *  row (`pooled rows`: every book from a pooled row, `f of an asset with no block` of them for an asset the model has no block for). */
+export function depthPicksNote(all: readonly DepthPicks[]): string {
+  const stress = [0, 1, 2].map((i) => all.reduce((n, x) => n + x.stress[i], 0));
+  const asset = all.reduce((n, x) => n + x.asset, 0), unblocked = all.reduce((n, x) => n + x.unblocked, 0), pooled = all.reduce((n, x) => n + x.pooled, 0) + unblocked;
+  return `books drawn from stress rows ${stress.join('/')}, asset rows ${asset}, pooled rows ${pooled} (${unblocked} of an asset with no block)`;
+}
+
+/** The `[twin] DIR simulator: ...` line: the depth fill-in's own activity summed over its days (`sims`: each day's DepthSim.stats, or the `sim` of a filledDayRows
+ *  result) and which rows fed the books (`picks`: each day's picksOf, or the `picks` of a filledDayRows result). The file route (research/historyTwin.ts stageFill) and
+ *  the in-stream route (the fast run, from its filledDayRows results) both print THIS line, so the comment of a fast run carries the same `books drawn from` counts
+ *  as a full run's; a test holds the two equal. Counts and numbers only. */
+export function simulatorLine(dir: string, sims: readonly Pick<DepthSim['stats'], 'seconds' | 'trades' | 'sweepPrints' | 'flickers'>[], picks: readonly DepthPicks[]): string {
+  const t = sims.reduce((a, x) => ({ seconds: a.seconds + x.seconds, trades: a.trades + x.trades, sweepPrints: a.sweepPrints + x.sweepPrints, flickers: a.flickers + x.flickers }), { seconds: 0, trades: 0, sweepPrints: 0, flickers: 0 });
+  const perMin = (n: number) => (t.seconds ? ((60 * n) / t.seconds).toFixed(1) : '0');
+  return `[twin] ${dir} simulator: ${Math.round(t.seconds / 60)} contract-minutes, trades ${perMin(t.trades)}/min (sweep prints ${perMin(t.sweepPrints)}), flickers ${perMin(t.flickers)}/min; ${depthPicksNote(picks)}`;
+}
+
 /** A whole day through quoteFiller. */
-export function fillQuotes(events: Ev[], fill: QuoteFill, depth?: DepthModel): Ev[] {
-  const f = streamFiller(fill, depth);
+export function fillQuotes(events: Ev[], fill: QuoteFill, depth?: DepthModel, params?: Partial<DepthSimParams>): Ev[] {
+  const f = streamFiller(fill, depth, params);
   return [...events.flatMap((e) => f.push(e)), ...f.end()];
 }
 
@@ -219,15 +263,17 @@ const LOOKAHEAD_MS = 20_000;
 /** quoteFiller as a stream that can add records: `depth` plays the simulated book around each quote, its changes and
  *  trades merged into the day in time order (a record is never written before one already written). Each quote is
  *  played once the contract's next quote is in (or LOOKAHEAD_MS has passed), from it to the next, with the trade flow
- *  set by where the mid goes (research/history/depthSim.ts); so the stream comes out LOOKAHEAD_MS behind. */
-export function streamFiller(fill: QuoteFill, depth?: DepthModel): { push: (e: Ev) => Ev[]; end: () => Ev[] } {
+ *  set by where the mid goes (research/history/depthSim.ts); so the stream comes out LOOKAHEAD_MS behind. `params`: the depth
+ *  simulator's tuning constants (over the defaults and over the model's own `params` block; research/history/depthSim.ts). */
+export function streamFiller(fill: QuoteFill, depth?: DepthModel, params?: Partial<DepthSimParams>): { push: (e: Ev) => Ev[]; end: () => Ev[] } {
   if (fill.how !== 'depth') {
     const f = quoteFiller(fill);
     return { push: (e) => { const x = f(e); return x ? [x] : []; }, end: () => [] };
   }
   if (!depth) throw new Error('the depth fill-in needs a depth model (models/depth_model.json)');
+  if (modelSchema(depth) > DEPTH_MODEL_SCHEMA) throw new Error(`the depth model is schema ${modelSchema(depth)}, newer than this code reads (${DEPTH_MODEL_SCHEMA}): refit it with this code`);
   const anchors = quoteFiller({ how: 'requote' });
-  const sim = new DepthSim(depth);
+  const sim = new DepthSim(depth, params);
   depthSims.push(sim);
   const close = new Map<string, number>();
   // The quote each contract's book is waiting to be played from, until its next quote is in.
@@ -297,8 +343,8 @@ export function streamFiller(fill: QuoteFill, depth?: DepthModel): { push: (e: E
 
 /** One day's file through quoteFiller, a line at a time (a whole recorded day is longer than the longest string V8
  *  allows, so it is never read into one). */
-export async function fillDayFile(src: string, dst: string, fill: QuoteFill, depth?: DepthModel): Promise<void> {
-  const f = streamFiller(fill, depth);
+export async function fillDayFile(src: string, dst: string, fill: QuoteFill, depth?: DepthModel, params?: Partial<DepthSimParams>): Promise<void> {
+  const f = streamFiller(fill, depth, params);
   const gz = zlib.createGzip({ level: 1 });
   const done = new Promise<void>((resolve, reject) => {
     const out = fs.createWriteStream(dst);
