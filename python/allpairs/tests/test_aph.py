@@ -105,7 +105,7 @@ class TradeLog(unittest.TestCase):
         self.assertEqual(_arr([1, 2]).dtype.kind, 'i')     # integer columns stay integers
 
     def test_fill_readouts(self):
-        tr = dict(spread=np.array([0.02, 0.07, 0.2, 0.01]), day=np.array([LIVE_TIER_DAY - 1, LIVE_TIER_DAY, LIVE_TIER_DAY, 1]),
+        tr = dict(mid=np.array([0.22, 0.83, 0.49, 0.92]), spread=np.array([0.02, 0.07, 0.2, 0.01]), day=np.array([LIVE_TIER_DAY - 1, LIVE_TIER_DAY, LIVE_TIER_DAY, 1]),
                   side=np.array([0, 1, 0, 1]), paid=np.array([0.2, 0.8, 0.5, 0.9]), mode=np.array([1, 1, 0, 1]),
                   strict=np.array([1, 0, -1, 1]), mk1=np.array([0.01, -0.02, 0.0, 0.03]),
                   mk60=np.array([0.02, np.nan, 0.01, 0.0]), mk300=np.array([np.nan, np.nan, 0.05, 0.01]))
@@ -122,6 +122,25 @@ class TradeLog(unittest.TestCase):
         self.assertEqual(r['markout']['maker']['n_mk60'], 2)
         self.assertAlmostEqual(r['strict_fill_share'], 2 / 3, places=4)
         self.assertEqual(fill_readouts({'spread': np.zeros(1)}, np.ones(1), 1), {})   # older parts: no readouts
+        mk = r['markout_mid']['maker']
+        # makers: edge at fill = mk1; mid to mid = mk60 - mk1 (finite rows 0 and 3: 0.01 and -0.03)
+        self.assertAlmostEqual(mk['edge_at_fill'], np.mean([0.01, -0.02, 0.03]), places=4)
+        self.assertAlmostEqual(mk['mm60'], np.mean([0.01, -0.03]))
+        tk = r['markout_mid']['taker']
+        self.assertAlmostEqual(tk['edge_at_fill'], 0.49 - 0.5)            # a taker pays half the spread
+        self.assertAlmostEqual(tk['mm60'], 0.01 + 0.5 - 0.49)
+
+    def test_concentration(self):
+        from allpairs.run import concentration
+        pnl = np.array([10.0, 5.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        day = np.array([1, 2, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5])
+        c = concentration(pnl, day, 10)
+        self.assertEqual(c['per_hour'], 2.1)
+        self.assertEqual(c['drop_top5'], round((21 - 18) / 10, 3))
+        self.assertEqual(c['drop_top3_days'], round((21 - 10 - 5 - 4) / 10, 3))
+        self.assertEqual(c['winners_to_total'], 8)        # 10 + 5 + 6 x 1 = 21
+        self.assertGreater(c['skew'], 1)
+        self.assertEqual(concentration(np.zeros(0), np.zeros(0), 10), {})
 
 
 class Skill(unittest.TestCase):

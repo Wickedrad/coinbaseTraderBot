@@ -1,0 +1,6 @@
+# Resting-exit fill probe, run 1. Read-log row 10ah (calendar.md) is on disk before this file was created.
+artifacts=heat-shadow-43051376882-9,heat-shadow-43051376882-10,heat-shadow-43138942198-1,heat-shadow-43138942198-2,heat-shadow-43138942198-3,heat-shadow-43138942198-4
+from=2026-11-11T22:55:00Z
+to=2026-11-12T13:00:00Z
+readlog=10ah
+run=1

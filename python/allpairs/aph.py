@@ -163,6 +163,8 @@ def ap_h2(new: dict) -> dict:
                 fill_ratio_arms=round(ms / mt, 4) if mt else None,
                 strict_fill_share_tight=t.get('strict_fill_share'),
                 markout=dict(tight=t.get('markout'), tight_strict=ts.get('markout')),
+                markout_mid=dict(tight=t.get('markout_mid'), tight_strict=ts.get('markout_mid')),
+                concentration=dict(tight=t.get('concentration'), tight_strict=ts.get('concentration')),
                 by_side_price=dict(tight=t.get('by_side_price'), tight_strict=ts.get('by_side_price')),
                 by_spread=dict(tight=t.get('by_spread'), tight_strict=ts.get('by_spread')),
                 by_tier=dict(tight=t.get('by_tier'), tight_strict=ts.get('by_tier')))
@@ -231,6 +233,8 @@ def card(res: dict) -> str:
                  f'maker entries the strict rule also fills {h2["strict_fill_share_tight"]}. Markouts per fill ($ per contract): '
                  f'{json.dumps(h2["markout"])}.')
         L.append(f'By side and price paid ($/h, trades): {json.dumps(h2["by_side_price"])}.')
+        L.append(f'Mid-to-mid markouts from the fill ($ per contract; edge_at_fill = mid at the fill minus price paid): '
+                 f'{json.dumps(h2["markout_mid"])}. Concentration: {json.dumps(h2["concentration"])}.')
     else:
         L.append(f'**AP-H2**: {h2["verdict"]}.')
     h1 = res['ap_h1b']

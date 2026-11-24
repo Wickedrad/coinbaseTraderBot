@@ -207,6 +207,13 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '', heldout:
         L.append(f'Fills {name} ($/h, trades): entry spread {fmt(r["by_spread"])}; tier {fmt(r.get("by_tier") or {})}; '
                  f'side and price paid {fmt(r.get("by_side_price") or {})}; {mk}'
                  + (f'; maker entries the strict rule also fills {r["strict_fill_share"]:.0%}' if r.get('strict_fill_share') is not None else '') + '.')
+        mmid = '; '.join(f'{m} edge at fill {x.get("edge_at_fill")} $, mid to mid +60 s {x.get("mm60")} $ ({x.get("n_mm60")}), '
+                         f'+300 s {x.get("mm300")} $ ({x.get("n_mm300")})' for m, x in (r.get('markout_mid') or {}).items())
+        c = r.get('concentration') or {}
+        if mmid or c:
+            L.append(f'Markouts and concentration {name}: {mmid}' + (f'; $/h {c.get("per_hour")}, without the top 5 trades {c.get("drop_top5")}, '
+                     f'top 10 {c.get("drop_top10")}, top 3 days {c.get("drop_top3_days")}; per-trade skew {c.get("skew")}; '
+                     f'{c.get("winners_to_total")} of {c.get("winners")} winners carry the total ({c.get("trades")} trades)' if c else '') + '.')
     bm = base.get('by_entry_minute') or {}
     if bm:
         L.append('By entry minute: ' + ', '.join(f'{k}: {x["per_hour"]:+.2f}' for k, x in sorted(bm.items(), key=lambda kv: int(kv[0]))) + ' $/h.')
