@@ -440,7 +440,7 @@ test('the dev verdict prints the diagnostics block beside every old line, and th
   }
   assert.match(has(/^\[twin\] requote: AUC by judged day/)[0], /2026-10-20 0\.\d{3} \(100 real\/100 twin\); 2026-10-21/);
   assert.ok(!lines.some((l) => /CONFIRM LOOK/.test(l)));
-  assert.deepEqual(Object.keys(report.twins.depth.checks), ['indistinguishable', 'noBias', 'errorWithinNoise', 'sameActivity']);
+  assert.deepEqual(Object.keys(report.twins.depth.checks), ['indistinguishable', 'noBias', 'shapeWithinNoise', 'sameActivity']);
   assert.ok(report.twins.depth.stress > 0.7 && report.twins.depth.auc > 0.7);
   const saved = JSON.parse(fs.readFileSync(path.join(out, 'verdict.json'), 'utf8'));
   assert.ok(saved.twins.depth.quantiles.spreadC.calm.real.length === 3 && saved.twins.depth.corrGaps.length === 10 && saved.twins.depth.aucByDay.length === 3);
@@ -478,14 +478,14 @@ test('the confirm verdict prints only the checks, the AUCs and day counts, and t
     assert.equal(quiet.lines.filter((l) => new RegExp(`^\\[twin\\] ${src}: (PASS|FAIL) `).test(l)).length, 1);
   }
   assert.ok(quiet.lines.includes('[twin] CONFIRM LOOK #1: first look'));
-  assert.equal(quiet.lines.length, 1 + 2 * 3 + 1, 'nothing else');
+  assert.equal(quiet.lines.length, 1 + 2 * 4 + 1 + 1, 'nothing else (J1: per source the AUC, STRESS, the amended check 3 line and PASS/FAIL, then one caveat line and the look)');
   const saved = JSON.parse(fs.readFileSync(path.join(out, 'verdict.json'), 'utf8'));
   assert.ok(saved.twins.depth.checks && typeof saved.twins.depth.stress === 'number' && !('quantiles' in saved.twins.depth) && !('features' in saved.twins.depth) && !('regimes' in saved.twins.depth) && !('corrGaps' in saved.twins.depth), 'verdict.json holds no tables either');
   assert.deepEqual(saved.split, { name: 'confirm', fit: 3, judge: 3 });
   // Another look is another number.
   const looked = await verdictLines(out, { n: 2, note: 'after round 3' });
   assert.ok(looked.lines.includes('[twin] CONFIRM LOOK #2: after round 3'));
-  assert.equal(looked.lines.length, 1 + 2 * 3 + 1);
+  assert.equal(looked.lines.length, 1 + 2 * 4 + 1 + 1);
   assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'verdict.json'), 'utf8')).look.n, 2, 'verdict.json records the look');
   // A dev verdict never prints a confirm look.
   const dev = verdictDir('dev', () => rows('twin', 0.4, 34));
@@ -2285,7 +2285,7 @@ test('the dev verdict reads the twin by asset (report only): lives and medians p
     assert.ok(dev.lines.findIndex((x) => x === btc) > dev.lines.findIndex((x) => x.startsWith(`[twin] ${src}: by regime`)), 'after the by-regime line');
   }
   // report only: the checks and the AUC are those of the same rows without the asset lines (the headline AUC is computed over every row)
-  assert.deepEqual(Object.keys(dev.report.twins.depth.checks), ['indistinguishable', 'noBias', 'errorWithinNoise', 'sameActivity']);
+  assert.deepEqual(Object.keys(dev.report.twins.depth.checks), ['indistinguishable', 'noBias', 'shapeWithinNoise', 'sameActivity']);
   assert.ok(dev.report.twins.depth.auc > 0.9);
   const conf = await verdictLines(dir('confirm'), { n: 1, note: 'a look' });
   assert.ok(!conf.lines.some((l) => /by asset|tradesPerMin|depth10/.test(l)), 'blind: no per-asset line on a confirm verdict');
@@ -2735,7 +2735,7 @@ test('the dev verdict adds, right after each by-asset line, the per-asset mean g
   assert.deepEqual(Object.keys(dev.report.twins.depth.gapByAsset).sort(), ['BTC', 'ETH'], 'an asset with no lives has no gap line');
   assert.equal(JSON.parse(fs.readFileSync(path.join(devDir, 'verdict.json'), 'utf8')).twins.depth.gapByAsset.BTC.gaps.tradesPerMin, dev.report.twins.depth.gapByAsset.BTC.gaps.tradesPerMin, 'verdict.json keeps them');
   // report only: the checks are the same four, and nothing of the gaps is among them
-  assert.deepEqual(Object.keys(dev.report.twins.depth.checks), ['indistinguishable', 'noBias', 'errorWithinNoise', 'sameActivity']);
+  assert.deepEqual(Object.keys(dev.report.twins.depth.checks), ['indistinguishable', 'noBias', 'shapeWithinNoise', 'sameActivity']);
   // the confirm verdict is blind: no per-asset line, no gap, no gap in its report
   const confDir = dir('confirm'), conf = await verdictLines(confDir, { n: 1, note: 'a look' });
   assert.ok(!conf.lines.some((l) => /gap by asset|by asset/.test(l)), 'no per-asset line on a confirm verdict');
@@ -4860,3 +4860,384 @@ test('R3b fix 2: the advice about FIT days goes with a REQUESTED day that has no
   const nw = noisy.log.split('\n').find((l) => l.startsWith('[twin] WARNING: the entry-state probe did not finish'))!;
   assert.match(nw, /Last lines: the depth fill-in of the probe's days failed; last lines: line 10 of the fill-in's error: contract <ticker> on <day>/); assert.ok(nw.length <= 299 && !/omit depth_model_run/.test(nw));
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// ---- J1 begin ----
+// Round J1 (Nov 23): the amended realism check 3, research/history/lossShape.ts (the stop-out frequency and the body distribution of each side's own
+// traded-window P&L), the pass bar's third key `shapeWithinNoise`, the old per-window error kept as REPORT ONLY, and the verdict's lines. Synthetic lists
+// only: no real window P&L is in any test, fixture or comment. The port is checked against the design panel's frozen reference by a one-off script
+// (outside the repo, 60 seeded cases, reported in the round's return) and, here, by golden numbers that script produced for three synthetic lists.
+import { ALPHA_BODY, ALPHA_STOP, energyPerm, fisherTwoSided, lossShapeCheck, notEvaluable, PERMS, SEED, STOP_LINE, type LossShape } from '../research/history/lossShape';
+import { shapeCaveatLine, shapeLines, shapeReportLines, tradedPnl } from '../research/historyTwin';
+
+/** The judge's LCG (outcome() in historyTwin.ts): a fresh stream per call site. */
+const j1Rnd = (seed: number) => { let s = seed >>> 0 || 1; return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296); };
+/** n traded windows' P&L in dollars: `stops` stop-outs (below -$5) and a quarter-dollar body in [-1.5, 3.5] x scale, at the head of the list the stop-outs last. */
+function j1Pnl(n: number, stops: number, seed: number, scale = 1): number[] {
+  const r = j1Rnd(seed);
+  const body = Array.from({ length: n - stops }, () => Math.round((r() * 5 - 1.5) * scale * 4) / 4);
+  return [...body, ...Array.from({ length: stops }, () => -5.25 - Math.floor(r() * 56) / 4)];
+}
+/** The same, with each window a stop-out with probability pStop (an independent draw from a population). */
+function j1Draw(n: number, pStop: number, seed: number, scale = 1): number[] {
+  const r = j1Rnd(seed);
+  return Array.from({ length: n }, () => (r() < pStop ? -5.25 - Math.floor(r() * 56) / 4 : Math.round((r() * 5 - 1.5) * scale * 4) / 4));
+}
+const J1_KEYS: Array<keyof LossShape> = ['pass', 'evaluable', 'reason', 'kR', 'nR', 'kT', 'nT', 'pStop', 'pBody', 'energy', 'crit95', 'bodyMeanR', 'bodyMeanT', 'worstR', 'worstT', 'realHadNoStopOut', 'twinHadNoStopOut'];
+
+test('J1 (a): the Fisher p is exact: values computed independently with python3 math.comb (the same minimum-likelihood rule, in exact fractions)', () => {
+  // [kR, nR, kT, nT, p]. Real first. Python: sum of C(nT,a)C(nR,K-a)/C(N,K) over the tables no more likely than the observed one, Fraction arithmetic.
+  const table: Array<[number, number, number, number, number]> = [
+    [2, 37, 2, 31, 1], [2, 37, 4, 53, 1], [2, 37, 8, 36, 0.0462201553236889], [2, 37, 12, 53, 0.03717266030073951], [0, 37, 0, 31, 1], [0, 37, 4, 53, 0.14044748140060034],
+    [2, 37, 0, 40, 0.22761449077238552], [1, 10, 9, 10, 0.001093333910671372], [5, 5, 0, 5, 0.007936507936507936], [0, 3, 3, 3, 0.1], [2, 37, 7, 40, 0.1564239734797327],
+    [2, 37, 10, 40, 0.02621589099190272], [2, 37, 9, 40, 0.049030813828773716], [0, 37, 5, 31, 0.01629978066270867], [0, 37, 5, 40, 0.05536568694463431], [2, 37, 0, 53, 0.1662921348314607],
+  ];
+  for (const [kR, nR, kT, nT, p] of table) {
+    const got = fisherTwoSided(kR, nR, kT, nT);
+    assert.ok(Math.abs(got - p) <= 1e-12 * Math.max(1, p), `${kR}/${nR} vs ${kT}/${nT}: ${got} against ${p}`);
+    assert.ok(Math.abs(fisherTwoSided(kT, nT, kR, nR) - p) <= 1e-12, `${kT}/${nT} vs ${kR}/${nR}: the table read the other way round gives the same p`);
+  }
+  // the bar sits where the numbers say: 2/37 against 8/36 and 12/53 are below 0.05, 9/40 is just under, 7/40 is not
+  assert.ok(fisherTwoSided(2, 37, 8, 36) <= ALPHA_STOP && fisherTwoSided(2, 37, 12, 53) <= ALPHA_STOP && fisherTwoSided(2, 37, 9, 40) <= ALPHA_STOP && fisherTwoSided(2, 37, 7, 40) > ALPHA_STOP);
+  assert.equal(fisherTwoSided(0, 5, 0, 5), 1, 'two empty cells: nothing to tell apart');
+});
+
+test('J1 (b): the energy statistic on hand-checked inputs, against an independent integral of the squared CDF gap, and the permutation p', () => {
+  const e = (x: number[], y: number[]) => energyPerm(x, y, 99).energy;
+  assert.equal(e([1, 2, 3], [1, 2, 3]), 0, 'identical samples');
+  assert.equal(e([0, 1, 1, 4], [4, 1, 0, 1]), 0, 'the same values in another order');
+  assert.equal(e([0], [1]), 1, 'x = [0], y = [1]: (F_x - F_y)^2 is 1 on [0, 1): the integral is 1');
+  assert.equal(e([0], [3]), 3, 'the gap is 3 dollars wide');
+  assert.equal(e([0, 2], [1]), 0.5, 'x = [0, 2], y = [1]: 0.25 on [0, 1) and 0.25 on [1, 2)');
+  assert.equal(e([1], [0, 2]), 0.5, 'symmetric');
+  assert.equal(e([0, 1], [10, 11]), 9.5, 'x = [0, 1], y = [10, 11]: 0.25 on [0, 1), 1 on [1, 10), 0.25 on [10, 11)');
+  // an independent computation: merge the breakpoints and integrate the two step functions exactly
+  const integral = (x: number[], y: number[]) => {
+    const z = [...new Set([...x, ...y])].sort((a, b) => a - b); let t = 0;
+    for (let i = 0; i + 1 < z.length; i++) { const f = x.filter((v) => v <= z[i]).length / x.length - y.filter((v) => v <= z[i]).length / y.length; t += f * f * (z[i + 1] - z[i]); }
+    return t;
+  };
+  const r = j1Rnd(5);
+  for (let k = 0; k < 25; k++) {
+    const x = Array.from({ length: 2 + Math.floor(r() * 12) }, () => Math.round(r() * 20) / 4), y = Array.from({ length: 2 + Math.floor(r() * 12) }, () => Math.round(r() * 24) / 4 - 1);
+    assert.ok(Math.abs(e(x, y) - integral(x, y)) < 1e-12, `case ${k}: ${e(x, y)} against ${integral(x, y)} (ties included)`);
+  }
+  // the permutation p: identical samples can never be told apart (p = 1); a clean separation is as small as the draws allow
+  const same = energyPerm([0.5, 1, 2, 2, 3.5], [3.5, 2, 2, 1, 0.5]);
+  assert.equal(same.p, 1); assert.equal(same.energy, 0);
+  const apart = energyPerm([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [100, 101, 102, 103, 104, 105, 106, 107, 108, 109]);
+  assert.ok(apart.p <= 2 / (PERMS + 1), `p ${apart.p}`); assert.ok(apart.energy > apart.crit95);
+  assert.equal(PERMS, 9999); assert.equal(SEED, 3); assert.equal(ALPHA_STOP, 0.05); assert.equal(ALPHA_BODY, 0.05);
+  // p is a count over (PERMS + 1) and the 95% line is the 9499th sorted draw
+  assert.ok(Number.isInteger(Math.round(same.p * (PERMS + 1))) && Math.abs(Math.round(apart.p * (PERMS + 1)) - apart.p * (PERMS + 1)) < 1e-9);
+});
+
+test('J1: STOP_LINE is the report\'s loser line (POSITION_LOSER_CENTS / 100), a stop-out is strictly below it, and the module is pure', () => {
+  assert.equal(STOP_LINE, POSITION_LOSER_CENTS / 100); assert.equal(STOP_LINE, -5);
+  const at = lossShapeCheck([1, 2, -5, 0.5, -5], [1, -5.01, 2, 0.5, -5]);
+  assert.equal(at.kR, 0, 'exactly -5.00 is a body window'); assert.equal(at.kT, 1, '-5.01 is a stop-out'); assert.equal(at.realHadNoStopOut, true);
+  const src = fs.readFileSync(path.join(ROOT, 'research/history/lossShape.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  assert.ok(!/\bDate\b|Math\.random|performance|\brequire\(|\bimport\b|\bfs\b|\bprocess\b|console\./.test(src), 'no clock, no randomness, no I/O, no import');
+  assert.ok(!/^(let|var) /m.test(src), 'no module-level mutable state');
+});
+
+test('J1 (c): deterministic: two calls are byte-identical, the answer does not read the clock, Math.random or the order of the lists, and the inputs are not touched', () => {
+  const real = j1Pnl(37, 2, 11), twin = j1Pnl(44, 3, 12);
+  const a = lossShapeCheck(real, twin), b = lossShapeCheck(real, twin);
+  assert.equal(JSON.stringify(a), JSON.stringify(b)); assert.deepEqual(Object.keys(a), J1_KEYS);
+  const rnd = Math.random, now = Date.now;
+  Math.random = () => { throw new Error('Math.random was read'); }; Date.now = () => { throw new Error('Date.now was read'); };
+  let c: LossShape;
+  try { lossShapeCheck(j1Pnl(20, 1, 1), j1Pnl(25, 1, 2)); c = lossShapeCheck(real, twin); } finally { Math.random = rnd; Date.now = now; }
+  assert.equal(JSON.stringify(c), JSON.stringify(a), 'another call in between, and a throwing clock and Math.random, change nothing');
+  const rev = lossShapeCheck([...real].reverse(), [...twin].sort((x, y) => y - x));
+  assert.equal(JSON.stringify(rev), JSON.stringify(a), 'the order of the windows in a list does not matter');
+  const fr = Object.freeze([...real]) as number[], ft = Object.freeze([...twin]) as number[];
+  assert.equal(JSON.stringify(lossShapeCheck(fr, ft)), JSON.stringify(a), 'frozen lists are fine: nothing is written to the inputs');
+  assert.deepEqual(real, j1Pnl(37, 2, 11)); assert.deepEqual(twin, j1Pnl(44, 3, 12));
+  assert.notEqual(JSON.stringify(lossShapeCheck(real, j1Pnl(44, 3, 13))), JSON.stringify(a), 'and a different list gives a different answer');
+});
+
+test('J1: golden numbers from the design panel\'s frozen reference, three synthetic pairs of lists (a pass, a double fail, a body fail)', () => {
+  const A = { real: [-0.25, -0.75, -1.25, 1, -0.75, 2.75, -0.25, 0.25, 1.75, -0.75, -0.25, 1.25, 0.25, 3.25, -0.75, 0.75, 0.5, -0.75, 2.25, -0.5, -1, -0.5, 0.25, 2, -8.75, -5.75], twin: [-0.25, 2.25, 2, -0.25, -0.5, -0.5, 0.5, -0.75, 2.5, -0.25, -0.75, 1, 0.25, -1, -2.75, 0, 1.5, 2.5, 0.75, 1.75, -8, -9.75] };
+  const B = { real: [0.75, -0.75, 2.25, -1.5, 0.5, -0.5, 0.5, -1.5, 0, 1.5, 0.25, 0.5, 0.75, 1.25, 1.25, 0.25, 4.25, -1.75, 1, -1.25, 1, 1.5, 3, -0.25, -8.5, -7.25], twin: [1.5, 3.25, 2.25, -2.5, 1.5, 1.5, 1.75, 0.25, 2.25, 2.25, 2.25, 1, -0.5, -0.75, 2.25, 3.25, -16.5, -14.75, -11, -14.75, -9.25, -5.5, -12.75, -11.25] };
+  const C = { real: [1.5, 3.25, 4.75, -2.75, 1.5, 0.25, 0.75, 1.5, 2, 2.25, 3.5, 1.75, -2, 1.75, 0.75, 0.5, -1.25, 0.5, -1, 1.25, 1, 1.75, 0.25, -0.5, -15.75, -14.25], twin: [-0.5, 0.25, 1, -0.75, 0, -0.25, -0.75, 1, 1, 0, 0.25, 0.25, -0.75, 0.5, 0.75, -1, 1.25, 0.5, 0.25, 0, 1.25, 0, -12, -7.25] };
+  // what the reference k1.ts returned for these lists (pass, reason, kR, nR, kT, nT, pStop, pBody, energy, crit95, bodyMeanR, bodyMeanT, worstR, worstT)
+  const want: Array<[typeof A, boolean, string, number, number, number, number, number, number, number, number, number, number]> = [
+    [A, true, 'ok', 2, 22, 0.9999999999999903, 0.9527, 0.017604166666666643, 0.17878472222222225, 0.3541666666666667, 0.4, -8.75, -9.75],
+    [B, false, 'stop-out frequency|body distribution', 8, 24, 0.03458681356951571, 0.0283, 0.26888020833333326, 0.22439236111111113, 0.5416666666666666, 1.34375, -8.5, -16.5],
+    [C, false, 'body distribution', 2, 24, 1, 0.0054, 0.2753278523875116, 0.15561868686868688, 0.96875, 0.19318181818181818, -15.75, -12],
+  ];
+  for (const [d, pass, why, kT, nT, pStop, pBody, energy, crit95, bmR, bmT, wR, wT] of want) {
+    const x = lossShapeCheck(d.real, d.twin);
+    assert.equal(x.pass, pass); assert.equal(x.evaluable, true); assert.equal(x.kR, 2); assert.equal(x.nR, 26); assert.equal(x.kT, kT); assert.equal(x.nT, nT);
+    assert.ok(Math.abs((x.pStop as number) - pStop) < 1e-12, `pStop ${x.pStop} against ${pStop}`); assert.equal(x.pBody, pBody);
+    assert.ok(Math.abs((x.energy as number) - energy) < 1e-12 && Math.abs((x.crit95 as number) - crit95) < 1e-12, `energy ${x.energy}, 95% line ${x.crit95}`);
+    assert.ok(Math.abs((x.bodyMeanR as number) - bmR) < 1e-12 && Math.abs((x.bodyMeanT as number) - bmT) < 1e-12); assert.equal(x.worstR, wR); assert.equal(x.worstT, wT);
+    assert.equal(x.reason, pass ? 'ok' : why.split('|').map((t) => `differs from real: ${t}`).join('; '), 'the reason names each failing test');
+    assert.equal(x.realHadNoStopOut, false); assert.equal(x.twinHadNoStopOut, false);
+  }
+});
+
+test('J1 (d): every degenerate input returns, in the rules\' order, without throwing: not evaluable, never a pass; real with no stop-out is NOT degenerate (the director\'s addition)', () => {
+  const ok = j1Pnl(37, 2, 21), body = (n: number, seed: number) => j1Pnl(n, 0, seed);
+  const finite = 'a window P&L is not a finite number';
+  const sparse = [1, 2, 3]; delete (sparse as unknown as Record<number, number>)[1];
+  const throwing: number[] = [1, 2, 3]; Object.defineProperty(throwing, 1, { get() { throw new Error('getter'); } });
+  const nonFinite: Array<[string, unknown, unknown]> = [
+    ['NaN in real', [1, NaN, 3], ok], ['NaN in twin', ok, [1, NaN, 3]], ['Infinity in real', [1, Infinity, 3], ok], ['-Infinity in twin', ok, [-Infinity, 2]], ['a string number', ['5', 2, 3], ok], ['null element', [1, null, 3], ok],
+    ['undefined element', ok, [1, undefined, 3]], ['a sparse list', sparse, ok], ['a list with a throwing getter', ok, throwing], ['undefined input', undefined, ok], ['null input', ok, null], ['a string', 'abc', ok], ['an object with a length', ok, { length: 3, 0: 1, 1: 2, 2: 3 }],
+    ['a number', 5, ok], ['a typed array (not an array)', new Float64Array([1, 2, 3]), ok], ['a Set', ok, new Set([1, 2, 3])], ['both not arrays', 1, 2], ['non-finite and empty: rule 1 comes first', [NaN], []], ['empty and non-finite: rule 1 comes first', [], [Infinity]],
+  ];
+  for (const [name, r, t] of nonFinite) {
+    let x!: LossShape; assert.doesNotThrow(() => { x = lossShapeCheck(r as number[], t as number[]); }, name);
+    assert.equal(x.pass, false, name); assert.equal(x.evaluable, false, name); assert.equal(x.reason, finite, name); assert.equal(x.pStop, null, name); assert.equal(x.pBody, null, name);
+    assert.ok(Number.isFinite(x.nR) && Number.isFinite(x.nT) && Number.isFinite(x.kR) && Number.isFinite(x.kT), `${name}: counts are numbers`);
+  }
+  // rule 2, then 3, then 4
+  const t0 = lossShapeCheck(ok, []); assert.deepEqual([t0.pass, t0.evaluable, t0.reason, t0.nR, t0.nT], [false, false, 'twin traded 0 windows', 37, 0]);
+  const r0 = lossShapeCheck([], ok); assert.deepEqual([r0.pass, r0.evaluable, r0.reason, r0.nR, r0.nT], [false, false, 'real traded 0 windows', 0, 37]);
+  const both0 = lossShapeCheck([], []); assert.equal(both0.reason, 'twin traded 0 windows', 'rule 2 is first when both are empty');
+  for (const x of [t0, r0, both0]) { assert.equal(x.pStop, null); assert.equal(x.pBody, null); assert.equal(x.energy, null); }
+  const few = 'not evaluable: fewer than 2 non-stop-out windows';
+  for (const [name, r, t] of [['1-window twin', ok, [1.5]], ['1-window real', [1.5], ok], ['a twin of stop-outs only', ok, [-9, -8, -7]], ['a real of stop-outs only', [-9, -8], ok], ['both 1 window', [1], [2]], ['one body window each side', [-6, 1], [-7, 2]], ['a twin of one body window and stop-outs', ok, [0.5, -6, -7, -8]]] as Array<[string, number[], number[]]>) {
+    let x!: LossShape; assert.doesNotThrow(() => { x = lossShapeCheck(r, t); }, name);
+    assert.deepEqual([x.pass, x.evaluable, x.reason, x.pStop, x.pBody, x.energy, x.crit95], [false, false, few, null, null, null, null], name);
+    assert.equal(x.nR, r.length, name); assert.equal(x.nT, t.length, name); assert.equal(x.kR, r.filter((v) => v < -5).length, name);
+  }
+  assert.equal(lossShapeCheck(ok, [1.5]).twinHadNoStopOut, true, 'a 1-window twin is a twin with no stop-out');
+  // real with NO stop-out: both tests run (the panel's rule said not evaluable)
+  const real0 = body(37, 31);
+  const same = lossShapeCheck(real0, body(31, 32));
+  assert.equal(same.evaluable, true); assert.equal(same.realHadNoStopOut, true); assert.equal(same.twinHadNoStopOut, true); assert.equal(same.kR, 0); assert.equal(same.kT, 0); assert.equal(same.pStop, 1, 'a twin with none against a real with none: nothing to reject');
+  assert.ok(typeof same.pBody === 'number' && typeof same.energy === 'number', 'the body test ran');
+  const five = lossShapeCheck(real0, [...body(26, 33), ...[-6, -7, -9.5, -11, -20.25]]);
+  assert.equal(five.evaluable, true); assert.equal(five.kT, 5); assert.equal(five.nT, 31); assert.equal(five.realHadNoStopOut, true); assert.equal(five.twinHadNoStopOut, false);
+  assert.ok(Math.abs((five.pStop as number) - 0.01629978066270867) < 1e-12, 'python: 0/37 against 5/31'); assert.equal(five.pass, false); assert.match(five.reason, /differs from real: stop-out frequency/);
+  const fiveOf40 = lossShapeCheck(real0, [...body(35, 34), -6, -7, -9.5, -11, -20.25]);
+  assert.ok(Math.abs((fiveOf40.pStop as number) - 0.05536568694463431) < 1e-12 && !/stop-out frequency/.test(fiveOf40.reason), '0/37 against 5/40 is p 0.055: not rejected at this sample size');
+  // a twin with no stop-out while real has some passes the stop-out test, and says so in its flag
+  const none = lossShapeCheck(ok, body(40, 35));
+  assert.equal(none.twinHadNoStopOut, true); assert.equal(none.realHadNoStopOut, false); assert.equal(none.kR, 2); assert.ok(!/stop-out frequency/.test(none.reason), `2/37 against 0/40: p ${none.pStop}`);
+  // the helper the verdict uses for a missing file
+  const miss = notEvaluable('no per-window P&L file for real'); assert.deepEqual([miss.pass, miss.evaluable, miss.reason, miss.nR, miss.nT], [false, false, 'no per-window P&L file for real', 0, 0]); assert.deepEqual(Object.keys(miss), J1_KEYS);
+});
+
+test('J1 (e): a perfect twin passes: 300 seeded twins that are resamples of a real sample of 37 windows with 2 stop-outs, 31 to 53 windows each', () => {
+  const real = j1Pnl(37, 2, 41), r = j1Rnd(42);
+  let pass = 0; const bad: string[] = [];
+  for (let k = 0; k < 300; k++) {
+    const m = 31 + Math.floor(r() * 23), twin = Array.from({ length: m }, () => real[Math.floor(r() * real.length)]);
+    const x = lossShapeCheck(real, twin);
+    if (x.evaluable && x.pass) pass++; else bad.push(`${m}:${x.reason}`);
+  }
+  assert.ok(pass / 300 >= 0.9, `pass rate ${pass / 300}; ${bad.slice(0, 5).join(' | ')}`);
+});
+
+test('J1 (e2): an independent twin from the same population passes about as often as the two levels allow (each side drawn fresh, 2/37 stop-outs)', () => {
+  let pass = 0, n = 0;
+  for (let k = 0; k < 160; k++) {
+    const x = lossShapeCheck(j1Draw(37, 2 / 37, 100 + k), j1Draw(31 + (k % 23), 2 / 37, 500 + k));
+    if (x.evaluable) { n++; if (x.pass) pass++; }
+  }
+  assert.ok(n >= 140, `${n} of 160 draws were evaluable (a draw can have too few body windows or none)`);
+  assert.ok(pass / n >= 0.85, `pass rate ${pass / n} over ${n}`);
+});
+
+test('J1 (f): power on synthetic data: 10 stop-outs in 40 windows fails on stop-out frequency, winners x0.75 fails on the body, the same distribution passes', () => {
+  // real: 37 windows, 2 stop-outs; the body is a tight cluster of winners (+$2 to +$3) and a few small losers, so a 25% haircut on the winners is a real shift
+  const r = j1Rnd(51);
+  const winners = Array.from({ length: 24 }, () => Math.round((2 + r()) * 4) / 4), small = Array.from({ length: 11 }, () => -Math.round((0.25 + r()) * 4) / 4);
+  const real = [...winners, ...small, -9.5, -7.25];
+  const stopTwin = [...winners.slice(0, 20), ...small.slice(0, 10), ...Array.from({ length: 10 }, (_, i) => -6 - i * 1.5)];
+  assert.equal(stopTwin.length, 40);
+  const s = lossShapeCheck(real, stopTwin);
+  assert.equal(s.evaluable, true); assert.equal(s.kR, 2); assert.equal(s.kT, 10); assert.ok(Math.abs((s.pStop as number) - 0.02621589099190272) < 1e-12);
+  assert.equal(s.pass, false); assert.match(s.reason, /differs from real: stop-out frequency/);
+  const haircut = [...winners.map((v) => v * 0.75), ...small, -9.5, -7.25];
+  const w = lossShapeCheck(real, haircut);
+  assert.equal(w.pass, false, `winners x0.75: ${w.reason}, p ${w.pBody}`); assert.match(w.reason, /differs from real: body distribution/); assert.ok(!/stop-out frequency/.test(w.reason));
+  assert.ok((w.pBody as number) <= ALPHA_BODY && (w.energy as number) > (w.crit95 as number));
+  // the same distribution (the real list again, and a resample of it) passes
+  assert.equal(lossShapeCheck(real, [...real]).pass, true);
+  const rs = j1Rnd(52), again = Array.from({ length: 41 }, () => real[Math.floor(rs() * real.length)]);
+  const p = lossShapeCheck(real, again); assert.equal(p.pass, true, `${p.reason} ${p.pStop} ${p.pBody}`);
+  // and the tripwire's blind side is real: a twin with NO stop-out against 2 of 37 is not rejected, whatever the twin's body is
+  assert.equal(lossShapeCheck(real, [...winners, ...small]).twinHadNoStopOut, true);
+});
+
+// ---- the verdict: windows files, the pass bar's new key, the lines ----
+
+type J1Win = Array<[number, { pnl: number; contracts: number; fills?: number }]>;
+/** A windows-*.json map as the legs write it: [closeTs, {pnl, contracts, fills}], with `idle` windows the side did not trade (contracts 0). */
+const j1WinFile = (pnl: readonly number[], idle = 0): J1Win => [...pnl.map((p, k) => [T0 + k * 15 * MIN, { pnl: p, contracts: 2 + (k % 3), fills: 3 }] as J1Win[number]), ...Array.from({ length: idle }, (_, k) => [T0 + (pnl.length + k) * 15 * MIN, { pnl: 0, contracts: 0, fills: 0 }] as J1Win[number])];
+/** A verdict folder with judged features for requote and depth and windows files as given (a source left out has no file). */
+function j1Dir(name: 'dev' | 'confirm' | 'custom', wins: Record<string, J1Win | string | undefined>): string {
+  const out = verdictDir(name === 'custom' ? 'dev' : name, () => rows('twin', 0.4, 61));
+  if (name === 'custom') fs.writeFileSync(path.join(out, 'split.json'), JSON.stringify({ name: 'custom', fit: ['2026-10-17', '2026-10-18'], judge: ['2026-10-20', '2026-10-21', '2026-10-22'], warm: [] }));
+  for (const [how, w] of Object.entries(wins)) if (w !== undefined) fs.writeFileSync(path.join(out, `windows-${how}.json`), typeof w === 'string' ? w : JSON.stringify(w));
+  return out;
+}
+const J1_REAL = j1Pnl(37, 2, 71), J1_GOOD = j1Pnl(40, 2, 74), J1_STOPPY = j1Pnl(40, 10, 73);
+const c3 = (lines: string[], src: string) => lines.filter((l) => l.startsWith(`[twin] ${src}: check 3`) || l.startsWith(`[twin] ${src}: WARNING: the twin has no stop-out`));
+
+test('J1 (g): the dev verdict: the amended line, the old report-only line, the body-means line, one caveat line, the new key, reportOnly, and the old value is the old formula\'s', async () => {
+  const placebo = J1_REAL.map((p, k) => (k % 3 === 0 ? p + 0.5 : p));
+  const out = j1Dir('dev', { real: j1WinFile(J1_REAL, 3), placebo: j1WinFile(placebo, 3), requote: j1WinFile(J1_GOOD, 2), depth: j1WinFile(J1_STOPPY) });
+  const { lines, report } = await verdictLines(out);
+  const real = new Map(j1WinFile(J1_REAL, 3)), pl = outcome(real, new Map(j1WinFile(placebo, 3)));
+  for (const src of ['requote', 'depth'] as const) {
+    const t = report.twins[src], tw = new Map(j1WinFile(src === 'requote' ? J1_GOOD : J1_STOPPY, src === 'requote' ? 2 : 0)), o = outcome(real, tw);
+    assert.deepEqual(Object.keys(t.checks), ['indistinguishable', 'noBias', 'shapeWithinNoise', 'sameActivity']);
+    assert.ok(!('errorWithinNoise' in t.checks), 'the old key is not in the pass bar');
+    // the new key is the amended check's pass; the old value is the old formula on the same numbers, kept as report only
+    const want = lossShapeCheck(src === 'requote' ? J1_REAL : J1_REAL, src === 'requote' ? J1_GOOD : J1_STOPPY);
+    assert.equal(t.checks.shapeWithinNoise, want.pass); assert.deepEqual(t.shape, JSON.parse(JSON.stringify(want)), 'the report holds the whole result');
+    assert.deepEqual(t.reportOnly, { errorWithinNoise: o.rmse <= 1.5 * Math.max(pl.rmse, 1e-9) }); assert.deepEqual(Object.keys(t.reportOnly), ['errorWithinNoise']);
+    assert.equal(t.pass, Object.values(t.checks).every(Boolean));
+    assert.equal(t.shape.nR, o.realTraded, 'the new check counts each side\'s own traded windows, the same ones check 4 counts'); assert.equal(t.shape.nT, o.traded);
+    // the lines
+    const mine = c3(lines, src);
+    assert.equal(mine.length, want.twinHadNoStopOut ? 4 : 3, `${src}: amended, old, body means (and the warning when the twin has no stop-out)`);
+    assert.match(mine[0], new RegExp(`^\\[twin\\] ${src}: check 3 \\(amended\\): stop-outs real 2/37 vs twin ${want.kT}/${want.nT}, p ${want.pStop!.toFixed(4)}; body distribution \\(non-stop-out windows\\) energy ${want.energy!.toFixed(3)}, p ${want.pBody!.toFixed(4)}, 95% line ${want.crit95!.toFixed(3)}; ${want.pass ? 'PASS' : 'FAIL'} \\(${want.reason.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)$`));
+    assert.equal(mine[1], `[twin] ${src}: check 3 (old, report only): per-window error $${o.rmse.toFixed(2)} (placebo $${pl.rmse.toFixed(2)}; the old bar was 1.5x placebo); not part of the verdict`);
+    assert.match(mine[2], new RegExp(`^\\[twin\\] ${src}: check 3 body means and worst windows \\(report only, never gating\\): body mean real \\$-?\\d+\\.\\d\\d, twin \\$-?\\d+\\.\\d\\d \\(ratio -?\\d+\\.\\d\\d\\); worst window real \\$-?\\d+\\.\\d\\d, twin \\$-?\\d+\\.\\d\\d \\(ratio -?\\d+\\.\\d\\d\\)$`));
+    const pf = lines.find((l) => l.startsWith(`[twin] ${src}: PASS`) || l.startsWith(`[twin] ${src}: FAIL`))!;
+    assert.match(pf, /\(indistinguishable (ok|no), noBias (ok|no), shapeWithinNoise (ok|no), sameActivity (ok|no)\)$/); assert.ok(!/errorWithinNoise/.test(pf), 'the printed bar names the new key');
+    assert.ok(lines.indexOf(mine[0]) < lines.indexOf(pf), 'the check-3 lines come before the PASS/FAIL line');
+    for (const l of mine) { assert.ok(l.length < 300, `${l.length} chars`); assert.ok(!/\b20\d\d-\d\d-\d\d\b|KX[A-Z]|[A-Z]{3,}-\d\d[A-Z]{3}/.test(l), 'no date and no ticker'); }
+  }
+  // the stop-out heavy twin fails on stop-outs; the plain twin does not
+  assert.equal(report.twins.depth.checks.shapeWithinNoise, false); assert.match(report.twins.depth.shape.reason, /differs from real: stop-out frequency/); assert.equal(report.twins.depth.pass, false);
+  assert.equal(report.twins.requote.shape.evaluable, true);
+  // exactly one caveat line, with real's own N and K (the 3 idle windows are not traded), after the sources
+  const cav = lines.filter((l) => l.startsWith('[twin] check 3 caveat:'));
+  // the depth twin FAILED check 3 above, so the line is the 'tripwire only' variant, not the sentence that reads as a pass
+  assert.deepEqual(cav, ['[twin] check 3 caveat: at n = 37 real windows with 2 stop-outs this check is a tripwire only; even a pass of it is not evidence that the loss tail or the total P&L is right']);
+  assert.equal(cav[0], shapeCaveatLine(37, 2, 'fail'));
+  assert.ok(lines.lastIndexOf(c3(lines, 'depth')[0]) < lines.indexOf(cav[0]));
+  // verdict.json keeps what the report holds
+  const saved = JSON.parse(fs.readFileSync(path.join(out, 'verdict.json'), 'utf8'));
+  assert.deepEqual(saved.twins.depth.reportOnly, report.twins.depth.reportOnly); assert.equal(saved.twins.depth.shape.pStop, report.twins.depth.shape.pStop);
+});
+
+test('J1 (g): the old errorWithinNoise value is the old formula\'s, byte for byte: with and without a placebo, and not part of the verdict', async () => {
+  // a twin whose per-window error is far above 1.5x the placebo's: the old check says no, the amended one (same shape) says ok, and the verdict follows the amended one
+  const realW = j1WinFile(J1_REAL), placebo = j1WinFile(J1_REAL.map((p, k) => (k % 9 === 0 ? p + 0.25 : p)));
+  const twinP = [...J1_REAL].reverse();           // the same multiset of windows in another order: the same shape, a large per-window error
+  const out = j1Dir('dev', { real: realW, placebo, requote: j1WinFile(twinP), depth: j1WinFile(twinP) });
+  const { lines, report } = await verdictLines(out);
+  const t = report.twins.depth, o = outcome(new Map(realW), new Map(j1WinFile(twinP))), pl = outcome(new Map(realW), new Map(placebo));
+  assert.ok(o.rmse > 1.5 * pl.rmse, `the old check would fail: ${o.rmse} against ${pl.rmse}`);
+  assert.deepEqual(t.reportOnly, { errorWithinNoise: false }); assert.equal(t.checks.shapeWithinNoise, true, 'the amended check sees the same distribution');
+  assert.ok(lines.includes(`[twin] depth: check 3 (old, report only): per-window error $${o.rmse.toFixed(2)} (placebo $${pl.rmse.toFixed(2)}; the old bar was 1.5x placebo); not part of the verdict`));
+  // no placebo file: the old value is false as before (its formula needs it) and the amended check does not need it
+  fs.rmSync(path.join(out, 'windows-placebo.json'));
+  const np = await verdictLines(out);
+  assert.deepEqual(np.report.twins.depth.reportOnly, { errorWithinNoise: false }); assert.equal(np.report.twins.depth.checks.shapeWithinNoise, true);
+  assert.ok(np.lines.some((l) => l.startsWith('[twin] depth: check 3 (old, report only): per-window error $') && l.includes('(placebo $?;')), 'the old line says the placebo is missing, as the backtest line does');
+  // the source text still holds the old formula once, verbatim
+  const src = fs.readFileSync(path.join(ROOT, 'research/historyTwin.ts'), 'utf8');
+  assert.equal(src.split('o && placebo ? o.rmse <= 1.5 * Math.max(placebo.rmse, 1e-9) : false').length - 1, 1);
+});
+
+test('J1 (g): the CONFIRM verdict prints counts and p-values only for the amended check: no energy, no body mean, no worst window, no dollar figure; verdict.json holds the same', async () => {
+  const out = j1Dir('confirm', { real: j1WinFile(J1_REAL), placebo: j1WinFile(J1_REAL), requote: j1WinFile(J1_GOOD), depth: j1WinFile(J1_STOPPY) });
+  const { lines, report } = await verdictLines(out, { n: 1, note: 'a look' });
+  const text = lines.join('\n');
+  for (const src of ['requote', 'depth'] as const) {
+    const mine = c3(lines, src), want = lossShapeCheck(J1_REAL, src === 'requote' ? J1_GOOD : J1_STOPPY);
+    assert.equal(mine.filter((l) => l.startsWith(`[twin] ${src}: check 3 (amended)`)).length, 1);
+    assert.equal(mine[0], `[twin] ${src}: check 3 (amended): stop-outs real 2/37 vs twin ${want.kT}/${want.nT}, p ${want.pStop!.toFixed(4)}; body distribution (non-stop-out windows) p ${want.pBody!.toFixed(4)}; ${want.pass ? 'PASS' : 'FAIL'} (${want.reason})`);
+    assert.ok(mine.every((l) => !/\$|energy|95% line|body mean|worst|ratio|per-window|placebo|old, report only/.test(l)), `${src}: nothing per window on a confirm split: ${mine.join(' || ')}`);
+    assert.ok(!lines.some((l) => l.startsWith(`[twin] ${src}: check 3 (old`) || l.startsWith(`[twin] ${src}: check 3 body means`)), 'neither the old line nor the body-means line');
+    assert.match(lines.find((l) => /^\[twin\] \w+: (PASS|FAIL) /.test(l) && l.startsWith(`[twin] ${src}:`))!, /shapeWithinNoise (ok|no), sameActivity/);
+    const t = report.twins[src];
+    assert.deepEqual(Object.keys(t.shape).sort(), ['evaluable', 'kR', 'kT', 'nR', 'nT', 'pBody', 'pStop', 'pass', 'reason', 'realHadNoStopOut', 'twinHadNoStopOut'].sort());
+    assert.deepEqual(t.reportOnly, { errorWithinNoise: t.reportOnly.errorWithinNoise }); assert.equal(typeof t.reportOnly.errorWithinNoise, 'boolean');
+    assert.ok(!('outcome' in t) && !('quantiles' in t));
+  }
+  assert.deepEqual(lines.filter((l) => l.startsWith('[twin] check 3 caveat:')), [shapeCaveatLine(37, 2, 'fail')]);
+  assert.ok(!/body mean|worst window|95% line|energy/.test(text), 'nowhere in the blind output');
+  assert.ok(!c3(lines, 'requote').concat(c3(lines, 'depth'), lines.filter((l) => l.startsWith('[twin] check 3'))).some((l) => /\b20\d\d-\d\d-\d\d\b|KX/.test(l)));
+  const saved = fs.readFileSync(path.join(out, 'verdict.json'), 'utf8');
+  assert.ok(!/bodyMean|worstR|worstT|crit95|"energy"/.test(saved), 'verdict.json of a confirm run holds no per-window figure either');
+  // a confirm split read by its days alone (no split on record) is blind too
+  const bare = j1Dir('dev', { real: j1WinFile(J1_REAL), requote: j1WinFile(J1_GOOD), depth: j1WinFile(J1_GOOD) });
+  fs.rmSync(path.join(bare, 'split.json'));
+  for (const src of ['real', 'requote', 'depth']) fs.writeFileSync(path.join(bare, `features-${src}.json`), JSON.stringify(rows(src, src === 'real' ? 0 : 0.4, src === 'real' ? 37 : 38).map((r, i) => ({ ...r, src, day: `2026-11-${18 + (i % 3)}` }))));
+  const blind = await verdictLines(bare, { n: 2, note: 'by the days' });
+  assert.ok(blind.lines.some((l) => l.startsWith('[twin] depth: check 3 (amended): stop-outs real 2/37 vs twin 2/40, p ') && !/energy|\$/.test(l)) && !blind.lines.some((l) => /body mean|worst window|old, report only/.test(l)));
+});
+
+test('J1 (g): a custom split prints the report-only lines like a dev one; the warning and the "real had no stop-out" mark are printed (counts only, also on confirm)', async () => {
+  const noStop = j1Pnl(37, 0, 81), twinNone = j1Pnl(40, 0, 82), twinSome = j1Pnl(40, 6, 83);
+  const dev = await verdictLines(j1Dir('custom', { real: j1WinFile(J1_REAL), placebo: j1WinFile(J1_REAL), requote: j1WinFile(twinNone), depth: j1WinFile(J1_GOOD) }));
+  assert.ok(dev.lines.some((l) => l.startsWith('[twin] depth: check 3 body means and worst windows (report only, never gating)')) && dev.lines.some((l) => l.startsWith('[twin] depth: check 3 (old, report only)')));
+  // the twin has no stop-out and real has 2: the warning, per source; a twin with some has none
+  const w = c3(dev.lines, 'requote').filter((l) => l.includes('WARNING'));
+  assert.deepEqual(w, ['[twin] requote: WARNING: the twin has no stop-out window while real has 2 of 37; nothing can reject that at this sample size, so the stop-out test passes it and a pass says nothing about the loss tail']);
+  assert.ok(!c3(dev.lines, 'depth').some((l) => l.includes('WARNING')));
+  assert.equal(dev.report.twins.requote.shape.twinHadNoStopOut, true); assert.ok(!/stop-out frequency/.test(dev.report.twins.requote.shape.reason));
+  // real with no stop-out (the director's addition): both tests run, the line says it, and the caveat has K = 0
+  const rn = await verdictLines(j1Dir('dev', { real: j1WinFile(noStop), placebo: j1WinFile(noStop), requote: j1WinFile(twinNone), depth: j1WinFile(twinSome) }));
+  assert.equal(rn.report.twins.requote.shape.evaluable, true); assert.equal(rn.report.twins.requote.shape.realHadNoStopOut, true); assert.equal(rn.report.twins.requote.shape.pStop, 1);
+  assert.match(c3(rn.lines, 'requote')[0], /^\[twin\] requote: check 3 \(amended\): stop-outs real 0\/37 \(real had no stop-out window\) vs twin 0\/40, p 1\.0000; body distribution /);
+  assert.ok(!c3(rn.lines, 'requote').some((l) => l.includes('WARNING')), 'no warning when real has none either');
+  assert.equal(rn.report.twins.depth.shape.evaluable, true); assert.match(rn.report.twins.depth.shape.reason, /stop-out frequency/, '0/37 against 6/40 is rejected');
+  assert.deepEqual(rn.lines.filter((l) => l.startsWith('[twin] check 3 caveat:')), [shapeCaveatLine(37, 0, 'fail')]);
+  // the same on the blind side: the mark and the warning are counts, so they print
+  const rc = await verdictLines(j1Dir('confirm', { real: j1WinFile(noStop), placebo: j1WinFile(noStop), requote: j1WinFile(twinNone), depth: j1WinFile(twinNone) }), { n: 1, note: 'a look' });
+  assert.match(c3(rc.lines, 'requote')[0], /real 0\/37 \(real had no stop-out window\) vs twin 0\/40, p 1\.0000; body distribution \(non-stop-out windows\) p \d\.\d{4}; (PASS|FAIL)/);
+  const cw = await verdictLines(j1Dir('confirm', { real: j1WinFile(J1_REAL), placebo: j1WinFile(J1_REAL), requote: j1WinFile(twinNone), depth: j1WinFile(twinNone) }), { n: 1, note: 'a look' });
+  assert.ok(c3(cw.lines, 'depth').some((l) => l.includes('WARNING: the twin has no stop-out window while real has 2 of 37')) && cw.lines.every((l) => !/\$/.test(l) || /CONFIRM LOOK/.test(l)));
+});
+
+test('J1 (g): windows files from earlier runs and files that are missing: a source (or real) with no windows file is NOT EVALUABLE and never throws; untraded windows are not windows; a window with no P&L is NOT EVALUABLE', async () => {
+  // a source with no windows file: its line says so, its key is no, the other source is judged, the verdict goes on
+  const one = await verdictLines(j1Dir('dev', { real: j1WinFile(J1_REAL), placebo: j1WinFile(J1_REAL), depth: j1WinFile(J1_GOOD) }));
+  assert.equal(c3(one.lines, 'requote')[0], '[twin] requote: check 3 (amended): NOT EVALUABLE (no per-window P&L file for requote)');
+  assert.equal(one.report.twins.requote.checks.shapeWithinNoise, false); assert.equal(one.report.twins.requote.shape.evaluable, false); assert.deepEqual(one.report.twins.requote.reportOnly, { errorWithinNoise: false });
+  assert.ok(!one.lines.some((l) => l.startsWith('[twin] requote: backtest P&L')) && !c3(one.lines, 'requote').some((l) => l.includes('old, report only')), 'the missing-source line is as it was: no backtest line, no old line');
+  assert.equal(one.report.twins.depth.shape.evaluable, true);
+  assert.deepEqual(one.lines.filter((l) => l.startsWith('[twin] check 3 caveat:')), [shapeCaveatLine(37, 2, 'fail')], 'a NOT EVALUABLE source: the line does not read as a pass');
+  // every judged source evaluated and passed: the spec's sentence, exactly
+  const ok = await verdictLines(j1Dir('dev', { real: j1WinFile(J1_REAL), placebo: j1WinFile(J1_REAL), requote: j1WinFile(J1_GOOD), depth: j1WinFile(J1_GOOD) }));
+  assert.ok(ok.report.twins.requote.shape.pass && ok.report.twins.depth.shape.pass, 'both sources pass the amended check');
+  assert.deepEqual(ok.lines.filter((l) => l.startsWith('[twin] check 3 caveat:')), [shapeCaveatLine(37, 2)]);
+  // no real windows: every source is NOT EVALUABLE, the caveat has n = 0
+  const nr = await verdictLines(j1Dir('dev', { depth: j1WinFile(J1_GOOD), requote: j1WinFile(J1_GOOD) }));
+  assert.equal(c3(nr.lines, 'depth')[0], '[twin] depth: check 3 (amended): NOT EVALUABLE (no per-window P&L file for real)');
+  assert.deepEqual(nr.lines.filter((l) => l.startsWith('[twin] check 3 caveat:')), [shapeCaveatLine(0, 0, 'none')]);
+  // no windows at all (a check-1-only run: the re-verdict of a run with no backtests)
+  const none = await verdictLines(j1Dir('dev', {}));
+  for (const src of ['requote', 'depth']) { assert.equal(none.report.twins[src].checks.shapeWithinNoise, false); assert.equal(none.report.twins[src].pass, false); assert.match(c3(none.lines, src)[0], /NOT EVALUABLE \(no per-window P&L file for real\)$/); }
+  // windows files as earlier runs wrote them: fills present, untraded windows (contracts 0) with a stray P&L that must not count as a window or a stop-out
+  const old = j1WinFile(J1_REAL, 0); old.push([T0 + 999 * MIN, { pnl: -40, contracts: 0, fills: 0 }]);
+  const earlier = await verdictLines(j1Dir('dev', { real: old, placebo: old, requote: j1WinFile(J1_GOOD), depth: j1WinFile(J1_GOOD) }));
+  assert.equal(earlier.report.twins.depth.shape.nR, 37); assert.equal(earlier.report.twins.depth.shape.kR, 2); assert.equal(earlier.report.twins.depth.shape.worstR, Math.min(...J1_REAL));
+  assert.deepEqual(tradedPnl(new Map(old)), J1_REAL);
+  // a window with contracts and no readable P&L (JSON null): the check is NOT EVALUABLE, no throw, the old numbers are still read as before
+  const badWin = j1WinFile(J1_GOOD); (badWin[3][1] as { pnl: number | null }).pnl = null;
+  const nul = await verdictLines(j1Dir('dev', { real: j1WinFile(J1_REAL), placebo: j1WinFile(J1_REAL), requote: j1WinFile(J1_GOOD), depth: badWin }));
+  assert.equal(nul.report.twins.depth.shape.reason, 'a window P&L is not a finite number'); assert.equal(nul.report.twins.depth.checks.shapeWithinNoise, false); assert.match(c3(nul.lines, 'depth')[0], /NOT EVALUABLE \(a window P&L is not a finite number\)$/);
+  // a twin whose windows are all untraded: 0 windows
+  const idle = await verdictLines(j1Dir('dev', { real: j1WinFile(J1_REAL), placebo: j1WinFile(J1_REAL), requote: j1WinFile([], 5), depth: j1WinFile(J1_GOOD) }));
+  assert.equal(idle.report.twins.requote.shape.reason, 'twin traded 0 windows'); assert.match(c3(idle.lines, 'requote')[0], /^\[twin\] requote: check 3 \(amended\): stop-outs real 2\/37 vs twin 0\/0, p n\/a; body distribution \(non-stop-out windows\) energy n\/a, p n\/a, 95% line n\/a; NOT EVALUABLE \(twin traded 0 windows\)$/);
+});
+
+test('J1: the line builders: a result that could not be judged prints without numbers it does not have; ratios guard a zero; the confirm form drops the energy', () => {
+  const miss = notEvaluable('no per-window P&L file for real');
+  assert.deepEqual(shapeLines('depth', miss, false), ['[twin] depth: check 3 (amended): NOT EVALUABLE (no per-window P&L file for real)']);
+  assert.deepEqual(shapeLines('depth', miss, true), ['[twin] depth: check 3 (amended): NOT EVALUABLE (no per-window P&L file for real)']);
+  assert.deepEqual(shapeReportLines('depth', miss, undefined, undefined), [], 'nothing to report');
+  const x = lossShapeCheck([0.5, 0.25, 1, 2, -6], [1, 1.5, 0.25, -0.5, -7]);
+  assert.match(shapeLines('depth', x, false)[0], /energy \d\.\d{3}, p \d\.\d{4}, 95% line \d\.\d{3}; (PASS|FAIL) /); assert.ok(!/energy/.test(shapeLines('depth', x, true)[0]));
+  const zero = lossShapeCheck([0, 0, -6], [1, 2, -6]);
+  assert.match(shapeReportLines('depth', zero, undefined, undefined)[0], /body mean real \$0\.00, twin \$1\.50 \(ratio n\/a\); worst window real \$-6\.00, twin \$-6\.00 \(ratio 1\.00\)$/);
+  assert.equal(shapeCaveatLine(37, 2), '[twin] check 3 caveat: no detectable difference at n = 37 real windows with 2 stop-outs; this is not evidence that the loss tail or the total P&L is right');
+  assert.equal(shapeCaveatLine(37, 2, 'pass'), shapeCaveatLine(37, 2), 'pass is the default');
+  assert.equal(shapeCaveatLine(37, 2, 'fail'), '[twin] check 3 caveat: at n = 37 real windows with 2 stop-outs this check is a tripwire only; even a pass of it is not evidence that the loss tail or the total P&L is right');
+  assert.equal(shapeCaveatLine(0, 0, 'none'), '[twin] check 3 caveat: not evaluated (no per-window P&L file for real, as in a run without backtests); a pass of it would not be evidence that the loss tail or the total P&L is right');
+});
+// ---- J1 end ----

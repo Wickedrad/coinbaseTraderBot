@@ -12,7 +12,8 @@
 #      run, if one is missing), fits the depth model on the FIT days only, builds the twin side (requote days from Drive
 #      simulated/kalshi-replay-200d while its manifest is this code's REPLAY_VERSION, else regenerated), and judges it.
 #      split=dev: iteration decisions are read here. split=confirm: read at the end of a round, never tuned on (its verdict
-#      prints only the checks, the AUC, the STRESS AUC and day counts). Fit days and judged days must never overlap.
+#      prints only the checks (ok/no), the AUC, the STRESS AUC, day counts and, for the amended check 3 (J1), stop-out and
+#      window counts with two p-values, never a per-window number). Fit days and judged days must never overlap.
 #   3. Backtests (checks 2-4) run only with backtests=true; the lag arms only with lag_arms=true (their fit is invalid until the
 #      quote lag is refit on post-Nov-10 recordings).
 #   4. The confirm days (2026-11-18..20) are HELD OUT (a recorded-data hold-out; not a future-day test): only split=confirm reads them (dev and custom refuse them as fit, judged or
@@ -1395,8 +1396,11 @@ jobs:
       # day, is NOT a verdict: outcome() takes the union of the windows and counts a missing window as P&L 0, so a lost twin or
       # real part would read as a simulator defect (sameActivity, noBias) and a lost placebo part would loosen check 3. The
       # guard fails the job with a '[twin] ERROR' line before any PASS/FAIL for checks 2-4 is printed (the AUC of check 1 does
-      # not need the legs: a re-verdict of the run, reverdict_run, reads it). On the confirm split only day-file counts print:
-      # a window count per source is check 4's own quantity, which the confirm verdict gives as ok/no.
+      # not need the legs: a re-verdict of the run, reverdict_run, reads it). On the confirm split only day-file counts print
+      # from the guard: a window count per source is check 4's own quantity, so those lines carry none. The verdict stage itself
+      # gives ok/no for checks 1, 2 and 4 and, for the amended check 3 (J1), counts and p-values: the stop-out and traded-window
+      # counts of each side (kR/nR, kT/nT) and the two p-values per source, and the caveat line's N and K; nothing per window
+      # (RUNBOOK 3.9).
       - name: Verdict
         env:
           LOOK_N: ${{ needs.build.outputs.look }}

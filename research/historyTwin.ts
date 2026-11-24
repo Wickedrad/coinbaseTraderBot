@@ -23,6 +23,13 @@
 // per-window P&L difference has a 95% bootstrap interval that contains 0; its per-window error <= 1.5x the placebo's;
 // windows traded within 10% of real.
 //
+// AMENDED check 3 (round J1, Nov 23: Steven's card of 22:02 UTC / 5:02 PM EST; the written reason is rounds/P2b.md). The per-window
+// error bar could not be passed by any statistical simulator (two real stop-outs are 80% of the squared P&L), so the pass bar's third key is
+// now `shapeWithinNoise`: the SHAPE of the twin's traded-window P&L (its stop-out frequency, exactly, and the distribution of its other
+// windows, by permutation) against the real days' own sampling noise (research/history/lossShape.ts). The old per-window error, with its old
+// formula and value, is kept as REPORT ONLY (`reportOnly.errorWithinNoise`, a printed line, never part of pass/fail). The other three
+// checks, FEATURES, discriminate, outcome and the bars are unchanged. It is a tripwire, not a certificate (RUNBOOK 3.9).
+//
 // THE HARNESS (Nov 22; runbook: depth-simulator/ralph-twin/RUNBOOK.md). A real full-depth day is 1.4-2.3 GB gzipped
 // (~15 GB raw), so re-parsing it on every iteration made each optimizer iteration take hours. Each real day is reduced
 // ONCE (stage prep, one pass, a string prefilter before any JSON.parse) to the records of its 15-minute-series contracts
@@ -106,6 +113,7 @@ import { REPLAY_VERSION } from './history/historyReplay';
 import type { ProbeAgg, ProbeFile, ProbeSource } from './history/entryProbe';
 import { runUnits, serveUnit } from './history/unitPool';
 import { DEPTH_MODEL_SCHEMA } from './history/depthModelVersion';
+import { lossShapeCheck, notEvaluable, STOP_LINE, type LossShape } from './history/lossShape';
 import { calibrateDepthModel, CAL_HELD_IN_BUDGET_S, gapsOfAsset, heldInCheck, type CalRow } from './history/depthCalibrate';
 import {
   describeParams, eliteOf, ELITE_FRACTION, generationCandidates, mergeShards, parentsFrom, parseShard, rankResults, shardRange, SWEEP_VERSION, type SweepResult, type SweepShardFile,
@@ -1141,6 +1149,58 @@ export function outcome(real: Win, other: Win, seed = 1): { pnl: number; realPnl
   return { pnl: b.reduce((x, y) => x + y, 0), realPnl: a.reduce((x, y) => x + y, 0), traded: keys.filter((k) => (other.get(k)?.contracts ?? 0) > 0).length, realTraded: keys.filter((k) => (real.get(k)?.contracts ?? 0) > 0).length, meanDiff: mean, lo: boots[Math.floor(0.025 * boots.length)] ?? 0, hi: boots[Math.floor(0.975 * boots.length)] ?? 0, rmse: Math.sqrt(n ? d.reduce((x, y) => x + y * y, 0) / n : 0), corr: corr(a, b) };
 }
 
+/** J1: the P&L in dollars (fees in) of the windows THIS side traded (contracts > 0 on this side): the list the amended check 3
+ *  (research/history/lossShape.ts) reads from a windows-*.json map. Each side's own windows, not the union-padded arrays `outcome` builds for check 2. */
+export function tradedPnl(w: Win): number[] {
+  const out: number[] = [];
+  for (const v of w.values()) if ((v?.contracts ?? 0) > 0) out.push(v.pnl);
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// J1: the lines of the amended check 3. Counts, probabilities and dollars of AGGREGATES only; never a date or a ticker. A CONFIRM
+// (blind) verdict gets counts and p-values only: no energy, no body mean, no worst window, no per-window number of any kind.
+
+const fmtP = (p: number | null): string => (p === null || !Number.isFinite(p) ? 'n/a' : p.toFixed(4));
+const fmtN = (x: number | null): string => (x === null || !Number.isFinite(x) ? 'n/a' : x.toFixed(3));
+const fmtUsd = (x: number | null): string => (x === null || !Number.isFinite(x) ? 'n/a' : `$${x.toFixed(2)}`);
+const fmtRatio = (twin: number | null, real: number | null): string => (twin === null || real === null || real === 0 || !Number.isFinite(twin / real) ? 'n/a' : (twin / real).toFixed(2));
+
+/** The amended check 3's line for one source, and its warning when the twin has no stop-out and real has some. `blind` = a confirm verdict. */
+export function shapeLines(src: string, s: LossShape, blind: boolean): string[] {
+  const verdict = `${s.evaluable ? (s.pass ? 'PASS' : 'FAIL') : 'NOT EVALUABLE'} (${s.reason})`;
+  const lines: string[] = [];
+  if (s.nR + s.nT === 0) lines.push(`[twin] ${src}: check 3 (amended): ${verdict}`);
+  else {
+    const stop = `stop-outs real ${s.kR}/${s.nR}${s.realHadNoStopOut ? ' (real had no stop-out window)' : ''} vs twin ${s.kT}/${s.nT}, p ${fmtP(s.pStop)}`;
+    const body = blind ? `body distribution (non-stop-out windows) p ${fmtP(s.pBody)}` : `body distribution (non-stop-out windows) energy ${fmtN(s.energy)}, p ${fmtP(s.pBody)}, 95% line ${fmtN(s.crit95)}`;
+    lines.push(`[twin] ${src}: check 3 (amended): ${stop}; ${body}; ${verdict}`);
+  }
+  if (s.twinHadNoStopOut && s.kR > 0) lines.push(`[twin] ${src}: WARNING: the twin has no stop-out window while real has ${s.kR} of ${s.nR}; nothing can reject that at this sample size, so the stop-out test passes it and a pass says nothing about the loss tail`);
+  return lines;
+}
+
+/** DEV and custom splits only, REPORT ONLY (never gating): the old per-window error beside its placebo, and the body means and worst windows of each side. */
+export function shapeReportLines(src: string, s: LossShape, o: { rmse: number } | undefined, placebo: { rmse: number } | undefined): string[] {
+  const lines: string[] = [];
+  if (o) lines.push(`[twin] ${src}: check 3 (old, report only): per-window error $${o.rmse.toFixed(2)} (placebo $${placebo?.rmse.toFixed(2) ?? '?'}; the old bar was 1.5x placebo); not part of the verdict`);
+  if (s.nR > 0 && s.nT > 0) lines.push(`[twin] ${src}: check 3 body means and worst windows (report only, never gating): body mean real ${fmtUsd(s.bodyMeanR)}, twin ${fmtUsd(s.bodyMeanT)} (ratio ${fmtRatio(s.bodyMeanT, s.bodyMeanR)}); worst window real ${fmtUsd(s.worstR)}, twin ${fmtUsd(s.worstT)} (ratio ${fmtRatio(s.worstT, s.worstR)})`);
+  return lines;
+}
+
+/** The one caveat line of a verdict (N and K are real's own traded windows and stop-outs). The spec's sentence ('no detectable difference ...') is
+ *  printed when every judged source was evaluated and passed; under a FAIL or a NOT EVALUABLE source it would read as a pass, so there the line says what
+ *  the check is instead ('tripwire only'), and with no real windows file at all (a run without backtests) that nothing was evaluated. */
+export function shapeCaveatLine(nReal: number, stopReal: number, state: 'pass' | 'fail' | 'none' = 'pass'): string {
+  const ev = 'evidence that the loss tail or the total P&L is right';
+  if (state === 'none') return `[twin] check 3 caveat: not evaluated (no per-window P&L file for real, as in a run without backtests); a pass of it would not be ${ev}`;
+  if (state === 'fail') return `[twin] check 3 caveat: at n = ${nReal} real windows with ${stopReal} stop-outs this check is a tripwire only; even a pass of it is not ${ev}`;
+  return `[twin] check 3 caveat: no detectable difference at n = ${nReal} real windows with ${stopReal} stop-outs; this is not ${ev}`;
+}
+
+/** What a CONFIRM verdict keeps of the amended check in its report (verdict.json): counts, p-values and the verdict, nothing per window. */
+const blindShape = (s: LossShape) => ({ pass: s.pass, evaluable: s.evaluable, reason: s.reason, kR: s.kR, nR: s.nR, kT: s.kT, nT: s.nT, pStop: s.pStop, pBody: s.pBody, realHadNoStopOut: s.realHadNoStopOut, twinHadNoStopOut: s.twinHadNoStopOut });
+
 // ---------------------------------------------------------------------------------------------------------------
 // R3a: the per-position dump of a backtest leg (REPORT ONLY: nothing here reaches the judge, the pass bar or the windows files).
 //
@@ -2151,6 +2211,7 @@ export async function stageVerdict(out = arg('out', 'data/twin'), look: ConfirmL
     console.log(`[twin] adversary sanity, real vs real: AUC ${report.realVsReal}`);
     if (placebo) console.log(`[twin] placebo (real at +250 ms): P&L $${placebo.pnl.toFixed(2)} vs $${placebo.realPnl.toFixed(2)}, per-window error $${placebo.rmse.toFixed(2)}, corr ${placebo.corr.toFixed(2)}`);
   }
+  let realTradedPnl: number[] | undefined, judgedAny = false, allShapePass = true;   // J1: real's own traded windows (for the caveat line), whether any source was judged, and whether every one passed the amended check
   for (const src of ['requote', 'depth', 'lag', 'lagdepth', 'worst', 'hold']) {
     const tw = rows(src);
     if (!tw.length) continue;
@@ -2158,21 +2219,30 @@ export async function stageVerdict(out = arg('out', 'data/twin'), look: ConfirmL
     const a = discriminate(real, tw, all);
     const each = confirm ? [] : FEATURES.map((name, j) => ({ name, auc: +discriminate(real, tw, [j]).toFixed(3), real: +med(real.map((r) => r.f[j])).toFixed(4), twin: +med(tw.map((r) => r.f[j])).toFixed(4) })).sort((x, y) => Math.abs(y.auc - 0.5) - Math.abs(x.auc - 0.5));
     const wf = path.join(out, `windows-${src}.json`), rf = path.join(out, 'windows-real.json');
-    const o = fs.existsSync(wf) && fs.existsSync(rf) ? outcome(readWin(rf), readWin(wf)) : undefined;
+    const twinWin = fs.existsSync(wf) ? readWin(wf) : undefined, realWin = fs.existsSync(rf) ? readWin(rf) : undefined;
+    const o = twinWin && realWin ? outcome(realWin, twinWin) : undefined;
+    // J1, the amended check 3: the SHAPE of each side's own traded-window P&L (research/history/lossShape.ts). A source or a real with no windows file is NOT EVALUABLE (never a throw).
+    const shape = realWin && twinWin ? lossShapeCheck(tradedPnl(realWin), tradedPnl(twinWin)) : notEvaluable(realWin ? `no per-window P&L file for ${src}` : 'no per-window P&L file for real');
+    if (realWin && !realTradedPnl) realTradedPnl = tradedPnl(realWin);
+    judgedAny = true; if (!(shape.evaluable && shape.pass)) allShapePass = false;
+    // The old check 3 (per-window error <= 1.5x the placebo's), same formula and value as before, REPORT ONLY since J1: it cannot be passed by a statistical simulator (rounds/P2b.md).
+    const errorWithinNoise = o && placebo ? o.rmse <= 1.5 * Math.max(placebo.rmse, 1e-9) : false;
     const checks = {
       indistinguishable: a <= 0.6,
       noBias: o ? o.lo <= 0 && o.hi >= 0 : false,
-      errorWithinNoise: o && placebo ? o.rmse <= 1.5 * Math.max(placebo.rmse, 1e-9) : false,
+      shapeWithinNoise: shape.pass,
       sameActivity: o ? Math.abs(o.traded - o.realTraded) <= 0.1 * Math.max(1, o.realTraded) : false,
     };
+    const reportOnly = { errorWithinNoise };
     const pass = Object.values(checks).every(Boolean);
     // REPORT ONLY: a tree-based second adversary on the same rows and folds. It is not in `checks`, so it cannot decide `pass`.
     const stress = stressAuc(real, tw, all);
     const stressLine = `[twin] STRESS ${src}: boosted-tree adversary AUC ${stress.toFixed(3)} (leave-one-day-out, same rows; report only, never part of pass/fail)`;
     if (confirm) {
-      report.twins[src] = { auc: +a.toFixed(3), stress: +stress.toFixed(3), real: real.length, twin: tw.length, checks, pass };
+      report.twins[src] = { auc: +a.toFixed(3), stress: +stress.toFixed(3), real: real.length, twin: tw.length, checks, reportOnly, shape: blindShape(shape), pass };
       console.log(`[twin] ${src}: adversary AUC ${a.toFixed(3)} (0.5 = can't tell; pass <= 0.60) over ${real.length} real / ${tw.length} twin contract lives`);
       console.log(stressLine);
+      for (const l of shapeLines(src, shape, true)) console.log(l);
       console.log(`[twin] ${src}: ${pass ? 'PASS' : 'FAIL'} (${Object.entries(checks).map(([k, v]) => `${k} ${v ? 'ok' : 'no'}`).join(', ')})`);
       continue;
     }
@@ -2210,7 +2280,7 @@ export async function stageVerdict(out = arg('out', 'data/twin'), look: ConfirmL
     const quant = Object.fromEntries(FEATURES.map((name, j) => [name, Object.fromEntries(groups.map((g) => [g, { real: quantiles3(of(real, g), j), twin: quantiles3(of(tw, g), j) }]))]));
     const gaps = topCorrDiffs(real, tw, 10);
     const perDay = discriminatePerDay(real, tw, all);
-    report.twins[src] = { auc: +a.toFixed(3), stress: +stress.toFixed(3), aucByDay: perDay.byDay.map((d) => ({ ...d, auc: d.auc === null ? null : +d.auc.toFixed(3) })), features: each, regimes, quantiles: quant, corrGaps: gaps.map((g) => ({ ...g, real: +g.real.toFixed(3), twin: +g.twin.toFixed(3), diff: +g.diff.toFixed(3) })), gapByAsset, outcome: o, checks, pass };
+    report.twins[src] = { auc: +a.toFixed(3), stress: +stress.toFixed(3), aucByDay: perDay.byDay.map((d) => ({ ...d, auc: d.auc === null ? null : +d.auc.toFixed(3) })), features: each, regimes, quantiles: quant, corrGaps: gaps.map((g) => ({ ...g, real: +g.real.toFixed(3), twin: +g.twin.toFixed(3), diff: +g.diff.toFixed(3) })), gapByAsset, outcome: o, checks, reportOnly, shape, pass };
     console.log(`[twin] ${src}: adversary AUC ${a.toFixed(3)} (0.5 = can't tell; pass <= 0.60) over ${real.length} real / ${tw.length} twin contract lives`);
     console.log(`[twin] ${src}: gives it away most: ${each.slice(0, 5).map((e) => `${e.name} ${e.auc} (real median ${e.real}, twin median ${e.twin})`).join('; ')}`);
     console.log(`[twin] ${src}: every feature (AUC, real median/twin median): ${each.map((e) => `${e.name} ${e.auc} ${e.real}/${e.twin}`).join('; ')}`);
@@ -2219,8 +2289,12 @@ export async function stageVerdict(out = arg('out', 'data/twin'), look: ConfirmL
     for (const [j, name] of FEATURES.entries()) console.log(`[twin] ${src} quantiles ${name} p10/p50/p90: ${groups.map((g) => `${g} real ${quantiles3(of(real, g), j).map(fmtQ).join('/')} twin ${quantiles3(of(tw, g), j).map(fmtQ).join('/')}`).join(' | ')}`);
     for (const [i, g] of gaps.entries()) console.log(`[twin] ${src} correlation gap #${i + 1}: ${g.a} ~ ${g.b}: real ${g.real.toFixed(2)}, twin ${g.twin.toFixed(2)} (diff ${g.diff.toFixed(2)})`);
     if (o) console.log(`[twin] ${src}: backtest P&L $${o.pnl.toFixed(2)} vs real $${o.realPnl.toFixed(2)}; windows ${o.traded} vs ${o.realTraded}; per-window diff $${o.meanDiff.toFixed(3)} [${o.lo.toFixed(3)}, ${o.hi.toFixed(3)}]; error $${o.rmse.toFixed(2)} (placebo $${placebo?.rmse.toFixed(2) ?? '?'}); corr ${o.corr.toFixed(2)}`);
+    for (const l of shapeLines(src, shape, false)) console.log(l);
+    for (const l of shapeReportLines(src, shape, o, placebo)) console.log(l);
     console.log(`[twin] ${src}: ${pass ? 'PASS' : 'FAIL'} (${Object.entries(checks).map(([k, v]) => `${k} ${v ? 'ok' : 'no'}`).join(', ')})`);
   }
+  // J1: one caveat line per verdict, always (what a pass of the amended check 3 does and does not say).
+  if (judgedAny) console.log(shapeCaveatLine(realTradedPnl?.length ?? 0, (realTradedPnl ?? []).filter((v) => v < STOP_LINE).length, !realTradedPnl ? 'none' : allShapePass ? 'pass' : 'fail'));
   if (confirm && look) { report.look = { n: look.n ?? null }; console.log(`[twin] CONFIRM LOOK #${look.n ?? '?'}: ${look.note}`); }
   // (a blind verdict without a look threw at the top, before anything was read or printed)
   fs.writeFileSync(path.join(out, 'verdict.json'), JSON.stringify(report, null, 1));
