@@ -1,0 +1,52 @@
+name: Ralph protected path guard
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  ralph-path-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check PR paths using trusted base-branch workflow, no PR checkout
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const head = pr.head.ref || '';
+            const all = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              pull_number: pr.number, per_page: 100
+            });
+            const paths = all.map(x => x.filename);
+            const maker = p => p.startsWith('python/ralph/') || p.startsWith('docs/ralph/');
+            const protectedPath = p => p.startsWith('python/ralph_eval/') || p === 'ralph/pins.json' || p === '.github/workflows/ralph-path-guard.yml';
+            const ralphRelated = paths.some(p => maker(p) || protectedPath(p)) || head.startsWith('feature/ralph-');
+            if (!ralphRelated) {
+              core.info('Unrelated PR; Ralph restriction not applicable');
+              return;
+            }
+            if (paths.length === 0) {
+              core.setFailed('Ralph PR with zero changed paths');
+              return;
+            }
+            const badPath = p => p.startsWith('/') || p.includes('\\') || p.split('/').includes('..') || p.split('/').includes('.');
+            if (paths.some(badPath)) {
+              core.setFailed('Unsafe changed path');
+              return;
+            }
+            const isProtectedPR = paths.some(protectedPath);
+            if (isProtectedPR) {
+              // Fail closed until owner approval and independent external critic attestation
+              // are implemented as trusted checks. A label alone is NOT sufficient.
+              core.setFailed('Protected evaluator/workflow edits require owner-approved separate PR and independent critic attestations');
+              return;
+            }
+            const outside = paths.filter(p => !maker(p));
+            if (outside.length) {
+              core.setFailed(`Maker PR has ${outside.length} files outside python/ralph/** and docs/ralph/**`);
+              return;
+            }
+            core.info(`Approved maker-only path scope: ${paths.length} changed files`);
