@@ -78,6 +78,18 @@
 #      flag on a confirm day) and writes and prints nothing new. The windows files, the [fidelity] lines and every verdict number are unchanged. The verdict and
 #      re-verdict jobs then print .github/scripts/twin-positions.py's comparison (requote, depth and placebo against real) in a step of their own, after the
 #      verdict, with continue-on-error: it never decides a pass and never fails a job.
+#  13. THE ENTRY-STATE PROBE (round R3b; RUNBOOK 3.2.1, 3.6, 4; REPORT ONLY). Why does the decision model enter ETH, SOL and XRP on twin days and not on
+#      real days? A policy-free read of the state the policy reads at entry time (the quote against the fair value, the spread, the model's own price and its
+#      take edge, the volatility, every model input feature), per asset, for the real day, the requote twin and the depth twin side by side, with no
+#      backtest. Inputs probe=true (FAST route, dev or custom only; refused with confirm, backtests, lag_arms) and probe_days (empty = the judged days; the FIT
+#      days are allowed too, a confirm day never). One step after 'Fast rows' with continue-on-error, a timeout and a final exit 0: it can never fail the job,
+#      number a look or change a verdict number. Counts, cents, shares and z-scores only; the probe files go to Drive under probe/ (copy only) and research/
+#      historyTwin.ts --stage probe-report re-prints them without recomputing. The job log gets the status lines, the units, a line per day whose process died and
+#      the scrubbed tail of a failed log; build.log (the build comment's tail) only the bounded lines (the whole report is a comment of its own); the inner limits
+#      (fill-in 300 s, day passes 900 s) nest inside the step's 25 minutes; probe-days.json keeps the requested day numbers when a day wrote no file. The step runs as
+#      GitHub runs a step with no shell: (bash -e {0}) and still ends 0 with its WARNING (R3b fix 2): -e is off in the step's shell and on inside the subshell that does
+#      the work; a day's process leaves a marker before it starts, so a day that was running when the limit cut it (or was killed) is told from one that never started,
+#      and the WARNING names the days by cause first (exit codes, cut, never started); the FIT-day advice is a line of its own, only for a REQUESTED day without a requote day.
 # The older routes (a Replay fidelity run's cached copy, a server copy slot) are gone from this file; commit 3be29e0 has them.
 #
 # No server access at all. This repository is public: jobs print counts, cents, $ and AUCs only; recordings never go to
@@ -175,6 +187,14 @@ on:
         default: ''
       depth_model_run:
         description: 'fast only: the run id of an earlier build whose depth model (Drive simulated/history-twin/RUN/models) is used instead of the fit. Refused unless it records exactly these fit days, the current study version and its per-asset calibration (the model carries it: it is not fitted again), and that calibration was fitted by this ref''s code (simulator source, requote layer, feature code: a stale one is refused)'
+        required: false
+        default: ''
+      probe:
+        description: 'FAST dev run only (REPORT ONLY; refused with split=confirm, backtests and lag_arms, and without fast=true or model_drive): after the fast rows, a policy-free probe of the ENTRY-TIME STATE per asset for real, requote and depth (spread, fair value against the quote, the decision model price against the quote, its take-edge shares, sigma, every model input feature in real within-asset sd), counts, cents, shares and z-scores only. It needs the decision model to price with: model_drive. It can never fail the job (RUNBOOK 3.2.1, 4)'
+        type: boolean
+        default: false
+      probe_days:
+        description: 'probe only: comma list of YYYY-MM-DD days to probe, each a fit or judged day of the split (empty = the split''s judged days; the FIT days are fine: state marginals only, no backtest outcome is read). Never a confirm day'
         required: false
         default: ''
 
@@ -431,6 +451,8 @@ jobs:
           REAL_FEATURES_RUN: ${{ inputs.real_features_run }}
           DEPTH_MODEL_RUN: ${{ inputs.depth_model_run }}
           LAG_ARMS: ${{ inputs.lag_arms }}
+          PROBE: ${{ inputs.probe }}
+          PROBE_DAYS: ${{ inputs.probe_days }}
         run: |
           set -euo pipefail
           source .github/scripts/twin-lib.sh
@@ -489,6 +511,29 @@ jobs:
             [ -n "$CLEAN" ] || twin_fail "split=confirm needs confirm_look_note (empty or only control characters): every look at the confirm days is numbered and logged on Drive"
           elif [ -n "$NOTE" ]; then echo "::warning::confirm_look_note is ignored unless split=confirm"
           fi
+          # The entry-state probe (R3b, REPORT ONLY; RUNBOOK 3.2.1): a fast dev or custom step, never a confirm run and never with the backtest legs or the lag arms (like fast); it prices
+          # with the decision model, so it needs model_drive; its days are fit or judged days of this split (those are the cached real days), never a confirm day.
+          [ "${PROBE:-}" = true ] || PROBE=false
+          if [ "$PROBE" = true ]; then
+            [ "$SPLIT" != confirm ] || twin_fail "probe=true is for split dev or custom only: the confirm split stays on the audited full path (leave probe off for split=confirm)"
+            [ "${BACKTESTS:-}" != true ] || twin_fail "probe=true cannot run with the backtest legs (it is a fast-route step that reads no backtest outcome): leave backtests off, or leave probe off"
+            [ "${LAG_ARMS:-}" != true ] || twin_fail "probe=true does not run with the lag arms: leave lag_arms off, or leave probe off"
+            [ "$FAST" = true ] || twin_fail "probe=true is for fast=true runs only: set fast=true, or leave probe off"
+            [ -n "${MODEL_DRIVE:-}" ] || twin_fail "probe=true needs model_drive (a folder under models/ on Drive with model.json): the probe prices with the decision model"
+            PD=$(printf '%s' "${PROBE_DAYS:-}" | tr -d ' ')
+            for d in ${PD//,/ }; do
+              [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [ "$(date -u -d "$d" +%F 2>/dev/null)" = "$d" ] || twin_fail "probe_days: '$d' is not a YYYY-MM-DD day"
+              case ",$CONFIRM," in *",$d,"*) twin_fail "probe_days: $d is a confirm day ($CONFIRM): the probe never reads a confirm day";; esac
+              case ",$FIT,$JUDGE," in *",$d,"*) ;; *) twin_fail "probe_days: $d is neither a fit day nor a judged day of this split ($FIT | $JUDGE): only those days are cached";; esac
+            done
+            # a FIT day's requote day is in the build only when this run fits the depth model (data/replay-fit); with depth_model_run it is read from Drive only at this code's replay version, else left out
+            if [ -n "${DEPTH_MODEL_RUN:-}" ]; then
+              for d in ${PD//,/ }; do
+                case ",$FIT," in *",$d,"*) echo "::warning::probe_days has a FIT day and depth_model_run is set: a FIT day's requote day is then read from Drive only when its replay manifest version equals this code's REPLAY_VERSION, else it is left out and the probe writes no file for it. Omit depth_model_run to fit here and keep the FIT requote days (RUNBOOK 3.2.1)"; break;; esac
+              done
+            fi
+          elif [ -n "${PROBE_DAYS:-}" ]; then echo "::warning::probe_days is ignored unless probe=true"
+          fi
           # Warm-up days only matter to the backtests (a judged day starts from the day before it): the day before each judged
           # day that is not itself judged, or warm_day when given. The next step keeps those that are cached.
           WARM=""
@@ -509,6 +554,10 @@ jobs:
             R="built from the real days"; [ -z "${REAL_FEATURES_RUN:-}" ] || R="reused from run $REAL_FEATURES_RUN"
             M="fitted here"; [ -z "${DEPTH_MODEL_RUN:-}" ] || M="reused from run $DEPTH_MODEL_RUN"
             echo "[twin] fast run: no filled day is written; real rows $R, depth model $M" | tee -a "$RUNNER_TEMP/build.log"
+          fi
+          if [ "$PROBE" = true ]; then
+            NP=$(printf '%s\n' ${PD//,/ } | grep -c . || true); [ "$NP" -gt 0 ] || NP=$(printf '%s\n' ${JUDGE//,/ } | grep -c .)
+            echo "[twin] probe requested: the entry-state probe (report only) runs after the fast rows on $NP day(s)" | tee -a "$RUNNER_TEMP/build.log"
           fi
       - name: Drive setup
         id: drive
@@ -892,6 +941,208 @@ jobs:
           HO=(); [ ! -d data/calib ] || HO=(--handoff data/calib)
           echo "[twin] fast rows from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
           node --import tsx research/historyTwin.ts --stage fastrows --real data/twin-real15m --twin data/replay-src --days "$JUDGE" --depth-model data/models/depth_model.json --out $T "${DP[@]}" "${RC[@]}" "${HO[@]}" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
+      # THE ENTRY-STATE PROBE (round R3b; RUNBOOK 3.2.1, 4; REPORT ONLY). R3a found the decision model entering ETH, SOL and XRP on the twin's days and not on the real
+      # days, and a full dev run (3.3 h) is too slow to learn why. This reads the entry-time state the policy sees (the quote against the fair value, the spread, sigma,
+      # the model's inputs and its price) for real, requote and depth, per asset, policy-free (no fill, no position, no outcome label), in minutes, on the judged days or
+      # on the FIT days (probe_days: state marginals only). It builds three folders: real = the cached real days (data/twin-real15m), requote = the requote days of the
+      # probe days and the day before each (the build's data/replay-src and data/replay-fit when they hold them, else Drive's simulated/kalshi-replay-200d, copy only: a
+      # probe never regenerates a day), depth = those requote days through the file-route fill with the depth model and parameters the fast rows used. The stage
+      # (research/historyTwin.ts --stage probe) runs one process per day (at most 4 at once; the real day's parse is what takes the time), each with a log of its own
+      # (probe-day-K.log, K = the day's position in date order, never a date), and the report (--stage probe-report) is printed from the files it wrote.
+      # WHERE THINGS GO. The job log gets every status line, the units (`[twin] probe unit SRC day K: N rows kept, S s`), a `process exited CODE` line per day that
+      # died, a warning by POSITION for a requested day that wrote no file, the last lines of a failed day's log and of a failed fill-in (days and tickers scrubbed:
+      # the repository is public), then the whole report. build.log, which is what the build comment's last 60 lines are made of, gets only the bounded lines (those
+      # status lines, the report's header and summary), so the evidence the RUNBOOK sends the reader to in that comment (the depth fill-in line, the books-drawn
+      # line, the activity lines) is not pushed out; the whole report is the comment of its own, 'History twin probe, run N'.
+      # THE LIMITS NEST. The step's 25 minutes hold the fill-in (300 s) and the day passes (900 s), each with 30 s to die after the TERM, which is 21 minutes, and the
+      # Drive reads, the report and the comment have the 4 minutes left: a slow run is cut by an inner limit and ends in a WARNING plus a report of the files that
+      # were written, never by GitHub's own limit with nothing said. One wave is 4 days (the runner's cores); more days run in waves and the later ones may be cut.
+      # It can NEVER fail the job: continue-on-error, the limits above, every exit swallowed and a final exit 0; a probe that did not finish is one WARNING line (the
+      # cause first: the days that left no file by cause, then the newest log line; at most 299 characters) and, only when a requested day has no requote day, one advice line. It reads
+      # no confirm day (the split step refused probe on confirm and any confirm day; the stage asserts it again), prints counts, cents, shares and z-scores only (days
+      # are named day 1..N, no date, no ticker), and writes probe-SRC-DAY.json (aggregates only) and probe-days.json (the days asked for, so a re-read keeps the day
+      # numbers when a day has no file) that the Drive step below keeps under probe/ (copy only).
+      - name: Entry-state probe (R3b, report only)
+        if: ${{ steps.split.outputs.fast == 'true' && inputs.probe }}
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JUDGE: ${{ steps.split.outputs.judge }}
+          PROBE_DAYS: ${{ inputs.probe_days }}
+          MODEL_DRIVE: ${{ inputs.model_drive }}
+          DEPTH_PARAMS_RUN: ${{ inputs.depth_params_run }}
+          # each probe process gets this heap (up to 4 at once on the 16 GB runner; a GUESS, never measured on a real full-depth day, like TWIN_CHILD_HEAP_MB)
+          PROBE_HEAP_MB: '3072'
+        run: |
+          set -uo pipefail
+          # GitHub runs a step with no `shell:` as `bash -e {0}`: with -e on, a failing probe_run below would end the step on the spot (red, no WARNING, no exit 0). -e is off in this shell
+          # on purpose; the subshell that does the work turns it on for itself, and it is NOT run in a `||` list (bash ignores -e inside a subshell that is) (RUNBOOK 3.2.1)
+          set +e
+          L="$RUNNER_TEMP/build.log"; STEP_LOG="$RUNNER_TEMP/probe-step.log"; P=data/twin/probe
+          : > "$STEP_LOG"; rm -f "$RUNNER_TEMP/probe-hint.txt" "$RUNNER_TEMP/probe-why.txt" "$RUNNER_TEMP"/probe-day-*.started
+          # a status line goes to the job log (fd 3: the subshell below keeps it), build.log and the step's own log; the rest of probe_run's output (rclone, node) goes to the step's log file only
+          exec 3>&1
+          # (a line is cut under 300 characters, as the build comment cuts it, so the job log and the comment show the same)
+          say() { echo "$*" | cut -c1-299 | tee -a "$L" "$STEP_LOG" >&3; }
+          # the days and tickers a log line may carry are scrubbed out of anything printed from a log (the repository is public)
+          scrub() { sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9:.]+Z?)?/<day>/g; s/KX[A-Za-z0-9._-]+/<ticker>/g'; }
+          lastlines() { { tail -n "$2" "$1" 2>/dev/null | cut -c1-200 | scrub; } || true; }
+          # the one-line message a stage prints ('[twin] ERROR: ...') first, then the last N lines that are not probe report lines, the ERROR line again or stack frames
+          errtail() { { { grep -m1 '^\[twin\] ERROR:' "$1"; grep -vE '^\[twin\] (probe|ERROR:)|^ *at |^Node\.js v' "$1" | tail -n "$2"; } 2>/dev/null | cut -c1-200 | scrub; } || true; }
+          # a day's own log without the report lines (the units are printed on their own; what is left is an error, a warning, a stack)
+          daylog() { errtail "$RUNNER_TEMP/probe-day-$1.log" "$2"; }
+          # why a day left no file, from what its process left behind (the job log only; by position, never a date). Args: K N EXITCODE(or empty) STARTED(1/0) HASLOG(1/0) FINISHED(1/0)
+          daywhy() {
+            local k="$1" n="$2" code="$3" started="$4" haslog="$5" fin="$6" w=""
+            if [ "$started" -eq 0 ]; then w="its process never started (a later wave: the day passes' limit was reached first); dispatch it on its own (RUNBOOK 3.2.1)"
+            elif [ "$code" = 134 ]; then w="node ran out of heap (PROBE_HEAP_MB is $PROBE_HEAP_MB): probe fewer days at once; the director raises PROBE_HEAP_MB in the workflow (RUNBOOK 3.2.1)"
+            elif [ "$code" = 137 ]; then w="it was killed from outside, most likely out of memory (the killer leaves no log): probe fewer days at once (RUNBOOK 3.2.1)"
+            elif [ -n "$code" ] && [ "$haslog" -eq 0 ]; then w="its process wrote no log before it exited"
+            elif [ -z "$code" ] && [ "$fin" -eq 0 ]; then w="its process was running when the limit cut it, or was killed, before its first source finished (it prints nothing until then); the unit seconds of the other days show how long one real pass takes: dispatch 1 or 2 days (probe_days=A,B) (RUNBOOK 3.2.1)"; fi
+            [ -z "$w" ] || echo "[twin] probe day $k of $n: $w"
+          }
+          # the days that left no file, by cause, from probe-why.txt (lines `TAG K`): "day(s) 1,3 exited 137; day(s) 2 cut or killed; day(s) 4 never started"
+          whysum() {
+            local f="$RUNNER_TEMP/probe-why.txt" t ds out=""
+            [ -s "$f" ] || return 0
+            for t in $(cut -d' ' -f1 "$f" | sort -u); do
+              ds=$(grep "^$t " "$f" | cut -d' ' -f2 | sort -n | paste -sd, -)
+              case "$t" in
+                exited-*) out="${out:+$out; }day(s) $ds exited ${t#exited-}";;
+                cut) out="${out:+$out; }day(s) $ds cut or killed";;
+                nostart) out="${out:+$out; }day(s) $ds never started";;
+              esac
+            done
+            printf '%s' "$out"
+          }
+          probe_run() {
+            PD=$(printf '%s' "${PROBE_DAYS:-}" | tr -d ' '); [ -n "$PD" ] || PD=$JUDGE
+            [[ "$MODEL_DRIVE" =~ ^[A-Za-z0-9._/-]+$ && "$MODEL_DRIVE" != *..* ]] || { echo "model_drive must be a folder name under models/"; return 1; }
+            DAYS=$(printf '%s\n' ${PD//,/ } | sort -u); N=$(printf '%s\n' $DAYS | grep -c . || true)
+            # the probe days and the day before each (the warm-up)
+            NEED=$(for d in $DAYS; do echo "$d"; date -u -d "$d - 1 day" +%F; done | sort -u | paste -sd, -)
+            mkdir -p "$P" data/probe-model data/probe-requote data/probe-requote-drive data/probe-src
+            # 1. the decision model to price with (copy-only Drive read; its vol model when it has one)
+            bash deploy/drive_lab.sh get "models/$MODEL_DRIVE" data/probe-model --include model.json --include vol_model.json || { echo "models/$MODEL_DRIVE is not on Drive"; return 1; }
+            [ -s data/probe-model/model.json ] || { echo "models/$MODEL_DRIVE has no model.json"; return 1; }
+            VMF=""; [ ! -s data/probe-model/vol_model.json ] || VMF=data/probe-model/vol_model.json
+            # 2. the requote days: the build's own copies first, the rest from Drive (the manifest version must be this code's; a day it lacks is left out, never regenerated)
+            MISS=""
+            for d in ${NEED//,/ }; do
+              if [ -s "data/replay-src/md-$d.jsonl.gz" ]; then cp "data/replay-src/md-$d.jsonl.gz" data/probe-requote/
+              elif [ -s "data/replay-fit/md-$d.jsonl.gz" ]; then cp "data/replay-fit/md-$d.jsonl.gz" data/probe-requote/
+              else MISS="${MISS:+$MISS,}$d"; fi
+            done
+            if [ -n "$MISS" ]; then
+              ARGS=(--include replay-manifest.json); for d in ${MISS//,/ }; do ARGS+=(--include "md-$d.jsonl.gz"); done
+              rc=0; bash deploy/drive_lab.sh get simulated/kalshi-replay-200d data/probe-requote-drive "${ARGS[@]}" || rc=$?
+              { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || { echo "reading simulated/kalshi-replay-200d on Drive failed (rclone exit $rc)"; return 1; }
+              node --import tsx research/historyTwin.ts --stage twin-source --dir data/probe-requote-drive --days "$MISS" --out data/probe-src > /dev/null
+              for d in $(tr ',' ' ' < data/probe-src/drive-days.txt); do cp "data/probe-requote-drive/md-$d.jsonl.gz" data/probe-requote/; done
+              LEFT=$(tr ',' '\n' < data/probe-src/regen-days.txt | grep -c . || true)
+              if [ "$LEFT" -ne 0 ]; then
+                say "[twin] probe: $LEFT requote day(s) (a probe day or the day before one) are not on Drive at this replay version; a probe never regenerates a day, so they are left out"
+              fi
+            fi
+            # the FIT-day remedy is about a REQUESTED day without its requote day; a missing warm-up day alone (always so for the judged days whose day before is a FIT day, with depth_model_run) is no failure and gets no advice
+            RQ=""; for d in $DAYS; do [ -s "data/probe-requote/md-$d.jsonl.gz" ] || RQ=1; done
+            if [ -n "$RQ" ]; then
+              : > "$RUNNER_TEMP/probe-hint.txt"
+              say "[twin] probe: a FIT day's requote day is in the build only when the run fitted the depth model here: omit depth_model_run to keep the FIT requote days, or use a run whose Drive replay manifest version equals REPLAY_VERSION (RUNBOOK 3.2.1)"
+            fi
+            # 3. the depth side: the requote days through the file-route fill, with the depth model and parameters the fast rows used (its own lines stay out of build.log)
+            DP=(); [ -z "${DEPTH_PARAMS_RUN:-}" ] || DP=(--depth-params data/sweep/best.json)
+            timeout --kill-after=30 300 node --import tsx research/historyTwin.ts --stage fill --src data/probe-requote --dst "$P/depth" --how depth --depth-model data/models/depth_model.json --split-file data/twin/split.json "${DP[@]}" > "$RUNNER_TEMP/probe-fill.log" 2>&1 || {
+              echo "the depth fill-in of the probe's days failed; last lines: $(errtail "$RUNNER_TEMP/probe-fill.log" 3 | tr '\n' '|')"
+              { echo "::group::the depth fill-in of the probe's days failed: the last 40 lines of its log (days and tickers scrubbed)"; lastlines "$RUNNER_TEMP/probe-fill.log" 40; echo "::endgroup::"; } >&3
+              return 1
+            }
+            say "[twin] probe depth side: $(ls "$P/depth" | grep -c '^md-' || true) requote day(s) filled in with the depth model and parameters the fast rows used"
+            # 4. the days, one process each (at most 4 at once, a log of its own), the whole under its own limit. Each writes its probe-SRC-DAY.json files and prints its own report into its log
+            # (the final report below, from the files, is the one that counts). A day whose process dies says so by position: `process exited CODE` (134: node's heap, 137: killed from outside)
+            J=$(nproc); [ "$J" -le 4 ] || J=4; [ "$J" -ge 1 ] || J=1
+            [ "$N" -le "$J" ] || say "[twin] probe: $N day(s) on $J process slot(s) run in waves; the day passes' 15-minute limit may cut the later ones (RUNBOOK 3.2.1: at most $J probe days per dispatch)"
+            export NODE_OPTIONS="--max-old-space-size=${PROBE_HEAP_MB}" P VMF RUNNER_TEMP PROBE_N="$N"
+            probe_day() {
+              local k="$1" d="$2" rc=0
+              # a marker before node starts: a day with a marker and no log was running (cut or killed), a day without one never started (RUNBOOK 3.2.1)
+              : > "$RUNNER_TEMP/probe-day-$k.started"
+              node --import tsx research/historyTwin.ts --stage probe --dirs "real=data/twin-real15m,requote=data/probe-requote,depth=$P/depth" --days "$d" --model data/probe-model/model.json ${VMF:+--vol-model "$VMF"} --split-file data/twin/split.json --out "$P" > "$RUNNER_TEMP/probe-day-$k.log" 2>&1 || rc=$?
+              [ "$rc" -eq 0 ] || echo "[twin] probe day $k of $PROBE_N: process exited $rc"
+              return 0
+            }
+            export -f probe_day
+            XRC=0; EXITS="$RUNNER_TEMP/probe-exits.log"
+            printf '%s\n' $DAYS | awk '{print NR, $0}' | timeout --kill-after=30 900 xargs -P "$J" -L1 bash -c 'probe_day "$@"' _ > "$EXITS" 2>&1 || XRC=$?
+            case "$XRC" in
+              0) ;;
+              124) say "[twin] WARNING: the entry-state probe's day passes hit their 15-minute limit and were stopped; the report is made of the files written so far (the build is not affected)";;
+              *) say "[twin] WARNING: the entry-state probe's day passes ended with exit $XRC (xargs); the report is made of the files written (the build is not affected)";;
+            esac
+            # 5. what came of each requested day, by position in date order (never a date): its units, whether its process died or was cut, how many source files it wrote
+            K=0; NONE=""; SOME=""; NF=0
+            for d in $DAYS; do
+              K=$((K + 1))
+              { grep '^\[twin\] probe unit ' "$RUNNER_TEMP/probe-day-$K.log" 2>/dev/null | sed -E "s/^\[twin\] probe unit ([a-z]+):/[twin] probe unit \1 day $K:/" || true; } | while IFS= read -r l; do say "$l"; done
+              c=$(find "$P" -maxdepth 1 -name "probe-*-$d.json" | wc -l); NF=$((NF + c))
+              died=0; code=""; grep -q "^\[twin\] probe day $K of " "$EXITS" 2>/dev/null && died=1
+              [ "$died" -eq 0 ] || code=$(sed -nE "s/^\[twin\] probe day $K of [0-9]+: process exited ([0-9]+)\$/\1/p" "$EXITS" | head -1 || true)
+              started=0; [ ! -e "$RUNNER_TEMP/probe-day-$K.started" ] || started=1
+              haslog=0; [ ! -s "$RUNNER_TEMP/probe-day-$K.log" ] || haslog=1
+              # a process that finished prints the stage's report (its header is `[twin] probe: N day(s) ...`, or `[twin] probe report: no probe files ...`); one that was cut or killed prints at most its unit lines
+              fin=0; grep -qE '^\[twin\] probe (report: |: [0-9])' "$RUNNER_TEMP/probe-day-$K.log" 2>/dev/null && fin=1
+              [ "$c" -gt 0 ] || NONE="${NONE:+$NONE,}$K"
+              { [ "$c" -eq 0 ] || [ "$c" -ge 3 ]; } || SOME="${SOME:+$SOME,}$K"
+              # the cause by position, for the WARNING (whysum)
+              if [ "$died" -eq 1 ]; then echo "exited-${code:-unknown} $K" >> "$RUNNER_TEMP/probe-why.txt"
+              elif [ "$started" -eq 0 ]; then echo "nostart $K" >> "$RUNNER_TEMP/probe-why.txt"
+              elif [ "$fin" -eq 0 ] && [ "$c" -lt 3 ]; then echo "cut $K" >> "$RUNNER_TEMP/probe-why.txt"; fi
+              if [ "$died" -eq 1 ]; then say "$(grep "^\[twin\] probe day $K of " "$EXITS" | head -1)"; fi
+              if [ "$died" -eq 1 ] || [ "$c" -eq 0 ] || { [ "$fin" -eq 0 ] && [ "$c" -lt 3 ]; }; then
+                daywhy "$K" "$N" "$code" "$started" "$haslog" "$fin" >&3
+                if [ "$haslog" -eq 1 ]; then
+                  if [ -n "$(daylog "$K" 5)" ]; then { echo "[twin] probe day $K of $N: last lines of its log, report lines left out (days and tickers scrubbed)"; daylog "$K" 5; } >&3
+                  else echo "[twin] probe day $K of $N: its log holds only the stage's own report lines (the unit lines above say why it wrote no file)" >&3; fi
+                fi
+              fi
+            done
+            if [ "$NF" -eq 0 ]; then
+              # (the cause comes first and the line stays short: the WARNING that quotes it is cut at 299 characters)
+              echo "no probe file was written${RQ:+ (a requested day has no requote day)}; last lines: $({ cat "$RUNNER_TEMP"/probe-day-*.log > "$RUNNER_TEMP/probe-days-all.log" 2>/dev/null; errtail "$RUNNER_TEMP/probe-days-all.log" 3; } | tr '\n' '|')"
+              return 1
+            fi
+            if [ -n "$NONE" ]; then
+              NN=$(printf '%s\n' ${NONE//,/ } | grep -c .)
+              say "[twin] WARNING: the entry-state probe wrote files for $((N - NN)) of $N requested day(s); requested day(s) $NONE (date order) have none and are left out of every line of the report, which keeps the requested day numbers (day 1 = the earliest requested day)"
+              [ -z "$(whysum)" ] || say "[twin] probe: why a day has no file, by position: $(whysum)"
+            fi
+            [ -z "$SOME" ] || say "[twin] probe: requested day(s) $SOME (date order) have files for fewer than 3 sources (a requote or depth day left out, or the day's process did not finish): the report says which, per day"
+            # the days asked for, so the report (and a later re-read) numbers by the request, not by the days that have a file
+            printf '{"v":1,"days":[%s]}\n' "$(printf '"%s"\n' $DAYS | paste -sd, -)" > "$P/probe-days.json"
+            # 6. the report, from the files (the same code a later --stage probe-report prints with)
+            node --import tsx research/historyTwin.ts --stage probe-report --dir "$P" > "$RUNNER_TEMP/probe-report.txt" 2> "$RUNNER_TEMP/probe-report.err" || { echo "the probe report failed: $(errtail "$RUNNER_TEMP/probe-report.err" 2 | tr '\n' '|')"; return 1; }
+          }
+          ( set -euo pipefail; probe_run ) >> "$STEP_LOG" 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ] || [ ! -s "$RUNNER_TEMP/probe-report.txt" ]; then
+            # the WARNING is cut at 299 characters (as the build comment cuts it): the cause comes first (the days that left no file, by cause, then the newest log line first), and the remedy for
+            # FIT days is a line of its own after it, only when a REQUESTED day has no requote day
+            CAUSE=$(whysum); [ -z "$CAUSE" ] || CAUSE="$CAUSE; "
+            say "[twin] WARNING: the entry-state probe did not finish (exit $rc); the build is not affected (report only). Last lines: ${CAUSE}$(grep -vE '^\[twin\] (probe|WARNING: the entry-state probe)|^ *at ' "$STEP_LOG" | tail -3 | tac | cut -c1-200 | scrub | tr '\n' '|')"
+            [ ! -e "$RUNNER_TEMP/probe-hint.txt" ] || say "[twin] probe: for FIT days omit depth_model_run so the run fits and keeps their requote days (RUNBOOK 3.2.1)"
+            # whatever the step wrote to its own log file (rclone, node, the shell's errors) is otherwise nowhere a reader can see it
+            { echo "::group::the probe step's own log, the last 60 lines (days and tickers scrubbed)"; lastlines "$STEP_LOG" 60; echo "::endgroup::"; }
+          else
+            grep '^\[twin\] probe' "$RUNNER_TEMP/probe-report.txt" | cut -c1-300 > "$RUNNER_TEMP/probe-lines.txt" || true
+            # build.log (the build comment's tail) gets the bounded lines only: the header, the closing summary and the like (a handful), never the whole report
+            grep -E '^\[twin\] probe( summary| report)?: ' "$RUNNER_TEMP/probe-lines.txt" >> "$L" || true
+            cat "$RUNNER_TEMP/probe-lines.txt"
+            # the report is long: a comment of its own (the build comment keeps the bounded lines)
+            { echo "History twin probe, run ${{ github.run_id }}"; echo; echo '```'; head -c 60000 "$RUNNER_TEMP/probe-lines.txt"; echo '```'; } > "$RUNNER_TEMP/probe.md"
+            gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/probe.md" --silent || echo "could not post the comment"
+          fi
+          exit 0
       # The judged part alone (paired mechanics + per-contract features + the split, small) for the verdict.
       # The real side's sidecars (real-meta.json, real-activity.json, real-fit-features.json: the real FIT rows the calibration fits to) are there on runs that
       # read no confirm day: a later fast run reuses them.
@@ -922,6 +1173,8 @@ jobs:
           for d in history history-replay history-replay-lag; do [ -d data/$d ] && ln -s "$GITHUB_WORKSPACE/data/$d" "$S/$d"; done
           [ -d data/models ] && ln -s "$GITHUB_WORKSPACE/data/models" "$S/models"
           [ -d data/sweep ] && ln -s "$GITHUB_WORKSPACE/data/sweep" "$S/sweep"
+          # the probe's aggregates (R3b: counts and histograms only, no recording line; the depth days it filled are not kept), under probe/
+          if ls data/twin/probe/probe-*.json > /dev/null 2>&1; then mkdir -p "$S/probe"; for f in data/twin/probe/probe-*.json; do ln -s "$GITHUB_WORKSPACE/$f" "$S/probe/$(basename "$f")"; done; fi
           echo "split ${{ steps.split.outputs.name }} fit ${{ steps.split.outputs.fit }} judge ${{ steps.split.outputs.judge }} warm ${{ steps.real.outputs.warm }}" > "$S/days.txt"
           RCLONE_COPY_LINKS=true bash deploy/drive_lab.sh put "simulated/history-twin/${{ github.run_id }}" "$S"
       # Only the backtest legs read the whole twin folder (a plain verdict reads the small judged files above).

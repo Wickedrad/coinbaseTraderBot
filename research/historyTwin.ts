@@ -67,6 +67,8 @@
 //   ... --stage fill ... [--depth-params best.json]   (a sweep's best candidate: the fill-in then logs every parameter it used)
 //   ... --stage fastrows --real data/twin-real15m --twin data/replay-src --days C,D --depth-model data/models/depth_model.json [--depth-params best.json] [--real-cache DIR --real-run RUN] --out data/twin
 //   ... --stage depth-model-check --depth-model FILE --split-file data/twin/split.json [--run RUN] [--model-meta real-meta.json]   (a depth model an earlier run fitted: reusable or not)
+//   ... --stage probe --dirs real=DIR,requote=DIR,depth=DIR --days A,B --model MODEL.json [--vol-model FILE] [--split-file data/twin/split.json] --out data/twin/probe   (R3b, REPORT ONLY: the entry-time state per source and asset)
+//   ... --stage probe-report --dir data/twin/probe   (the same report, from the probe files alone; probe-days.json beside them, when the workflow step wrote it, keeps the requested day numbers)
 //
 // THE SWEEP (Nov 22). The depth simulator's dynamic constants (research/history/depthSim.ts DepthSimParams) are set by a machine
 // optimizer instead of by hand: each candidate is the fill-in with one set of parameters, judged by the SAME judge on the FIT days
@@ -96,11 +98,12 @@ import { fileURLToPath } from 'url';
 import { performance } from 'perf_hooks';
 import zlib from 'zlib';
 import { OrderBook } from '../bot/marketdata/orderBook';
-import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles';
+import { linkDays, recordingFiles, recordingLines, type RecordingDay } from '../bot/marketdata/recordingFiles';
 import { gbdtLogit } from '../bot/model/trees';
 import { trainGbdt } from './gbdt';
 import { assetOfTicker, DEPTH_ASSETS, readDepthModel, resolveDepthSimParams, validateDepthModel, type CalibrationCode, type DepthCalibration, type DepthModel, type DepthSimParams } from './history/depthSim';
 import { REPLAY_VERSION } from './history/historyReplay';
+import type { ProbeAgg, ProbeFile, ProbeSource } from './history/entryProbe';
 import { runUnits, serveUnit } from './history/unitPool';
 import { DEPTH_MODEL_SCHEMA } from './history/depthModelVersion';
 import { calibrateDepthModel, CAL_HELD_IN_BUDGET_S, gapsOfAsset, heldInCheck, type CalRow } from './history/depthCalibrate';
@@ -1720,6 +1723,185 @@ async function stageFastRows(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Stage probe (round R3b; REPORT ONLY; RUNBOOK 3.2.1, 4): why does the decision model enter ETH, SOL and XRP on the twin's days and not on the
+// real days? The cause has to be in the state the policy reads at entry time, and a full dev run (3.3 h, legs that cannot rerun alone) is too slow
+// to learn from, so this reads that state directly: for each source (real, requote, depth) and each day D it runs the decision model's own dataset
+// builder (research/buildDataset.ts, CALLED and not edited, like MetaModel and the feature engine: all three are bundled by the Windows trainer)
+// over the day before D (warm-up, so the features are not cold) and D itself, at a 15 s step inside the policy's entry window, streams the rows
+// (none is kept) and aggregates them per asset into the small structs of research/history/entryProbe.ts. Policy-free: no fill, no position, no
+// outcome label is read for anything printed; so it runs on FIT days as well (state marginals only), which is what a later lever is fitted on.
+//
+// What it prices with, said once (the first lines of the report say it too): the dataset builder's own fair value, which is what the model was
+// trained on. The backtest (research/backtest.ts 885-889) additionally multiplies sigma by VOL_FALLBACK_MULT (1.15) while no vol model is validated,
+// prices with the model's Student-t nu (params.tNu) and adds the TA tilt and rule shifts to the model's price; none of these is applied here (the
+// builder takes no such option and may not be edited), so the probe's absolute |fv-mid| and take-edge shares are the builder's, not the backtest's
+// exactly, and the sources are compared with each other under the same pricing. pModel is `MetaModel.predictDetailed(row.fx, row.fv).p`, the price
+// of backtest.ts 904 and 928. The vol model is the backtest's own choice (backtestDirRun): applied when cfg.strategy.volModel is on and a
+// vol_model.json is given (--vol-model) or lies beside the model, and then only its validated multiplier moves sigma (VolForecaster). The entry
+// window is cfg.strategy.entryWindowUpdown (840 to 300 s before close by default), the policy's, not the dataset builder's default.
+
+const PROBE_FILE_RE = /^probe-(real|requote|depth)-(\d{4}-\d{2}-\d{2})\.json$/;
+const probeFileName = (src: string, day: string): string => `probe-${src}-${day}.json`;
+
+/** The probe's guards, before anything is created or read: at least one real calendar day; never a confirm day, whether named in `days`, found as
+ *  a day file in any source folder, or judged by the split on record (`splitFile`, optional). The twin's days are dev and custom days only. */
+export function probeGuards(o: { days: readonly string[]; dirs: Readonly<Record<string, string>>; splitFile?: string }): void {
+  if (!o.days.length) throw new Error('the probe needs --days (the days to probe, a comma list of YYYY-MM-DD)');
+  parseDays(o.days.join(','), 'probe days');
+  const hit = o.days.filter((d) => CONFIRM_DAYS.includes(d));
+  if (hit.length) throw new Error(`the probe never reads a confirm day (${hit.join(', ')}): the confirm days are read only through split=confirm with a confirm_look_note`);
+  for (const [src, dir] of Object.entries(o.dirs)) {
+    const found = recordingFiles(dir).map((f) => f.day).filter((d) => CONFIRM_DAYS.includes(d));
+    if (found.length) throw new Error(`the probe never reads a confirm day: the ${src} folder holds ${found.join(', ')}`);
+  }
+  if (o.splitFile) {
+    const sp = readSplit(o.splitFile);
+    if (!sp) throw new Error(`no split in ${o.splitFile}`);
+    assertHeldOut(sp, o.days);
+    if (isBlind(sp, o.days)) throw new Error('the probe is for dev and custom splits only: a run that reads a confirm day prints no tables');
+  }
+}
+
+export interface ProbeOpts {
+  /** The folders of day files per source (the twin's contract list for the real source is the requote folder's). */
+  dirs: Partial<Record<ProbeSource, string>>;
+  /** The days to probe. */
+  days: string[];
+  /** The decision model (model.json); its input features and referenceSigma are read from it. */
+  modelFile: string;
+  /** The vol model the backtest would use, when there is one (applied only when cfg.strategy.volModel is on, as backtestDirRun does; else the one beside the model, if any). */
+  volModelFile?: string;
+  out: string;
+  splitFile?: string;
+  log?: (line: string) => void;
+}
+
+/** The probe: one file `probe-SRC-DAY.json` per (source, day) in `out`, written in date order, source order real, requote, depth. Returns the paths it wrote. */
+export async function probeStage(o: ProbeOpts): Promise<string[]> {
+  const say = o.log ?? ((l: string) => console.log(l));
+  const days = [...new Set(o.days)].sort(), dirs = o.dirs as Record<string, string>;
+  probeGuards({ days, dirs, splitFile: o.splitFile });
+  for (const k of Object.keys(dirs)) { if (!(['real', 'requote', 'depth'] as string[]).includes(k)) throw new Error(`--dirs: unknown source "${k.slice(0, 20)}" (real, requote or depth)`); if (!fs.existsSync(dirs[k])) throw new Error(`--dirs: the ${k} folder ${dirs[k]} does not exist`); }
+  if (dirs.real && !dirs.requote) throw new Error('the real source is restricted to the requote days\' contracts: --dirs needs requote=DIR beside real=DIR');
+  if (!fs.existsSync(o.modelFile)) throw new Error(`--model: ${o.modelFile} does not exist`);
+  const { buildDataset } = await import('./buildDataset');
+  const { MetaModel } = await import('../bot/model/metaModel');
+  const { VolModel } = await import('../bot/model/volModel');
+  const { loadCalendar } = await import('../bot/model/calendar');
+  const { loadConfig, paperEnv } = await import('../bot/config');
+  const { addRow, newAgg, PROBE_ASSETS, PROBE_KEYS, PROBE_STEP_SEC, PROBE_VERSION } = await import('./history/entryProbe');
+  const cfg = loadConfig(paperEnv(process.env));
+  const model = MetaModel.load(o.modelFile), features = [...model.params.features];
+  const window = cfg.strategy.entryWindowUpdown as [number, number];
+  // the vol model as backtestDirRun picks it: only with VOL_MODEL on; the file given, else vol_model.json beside the model
+  const beside = path.join(path.dirname(o.modelFile), 'vol_model.json');
+  const volFile = !cfg.strategy.volModel ? '' : o.volModelFile || (fs.existsSync(beside) ? beside : '');
+  const volModel = volFile ? VolModel.load(volFile) : undefined;
+  const volTag: ProbeFile['volModel'] = volModel ? (volModel.validated ? 'validated' : 'unvalidated') : 'none';
+  const calendar = loadCalendar('params/calendar.json');
+  fs.mkdirSync(o.out, { recursive: true });
+  const written: string[] = [];
+  for (const day of days) {
+    const dayStart = Date.parse(`${day}T00:00:00Z`), dayEnd = dayStart + 86_400_000;
+    for (const src of ['real', 'requote', 'depth'] as const) {
+      const dir = dirs[src];
+      if (!dir) continue;
+      const cur = dayFile(dir, day), prev = dayFile(dir, prevDayOf(day));
+      if (!cur) { say(`[twin] probe unit ${src}: no day file for one of the probe days; left out`); continue; }
+      // the real source keeps the contracts the requote day (and the day before it, for those open at midnight) lists, as the match stage does
+      let keep: Set<string> | undefined;
+      if (src === 'real') {
+        const tf = dayFile(dirs.requote, day);
+        if (!tf) { say('[twin] probe unit real: no requote day for one of the probe days, so no contract list; left out'); continue; }
+        keep = new Set((await tickersOf(tf)).keys());
+        const tp = dayFile(dirs.requote, prevDayOf(day));
+        if (tp) for (const tk of (await tickersOf(tp)).keys()) keep.add(tk);
+      }
+      const t0 = performance.now(), tmp = path.join(o.out, `.probe-tmp-${src}-${day}`);
+      fs.rmSync(tmp, { recursive: true, force: true });
+      const aggs: Record<string, ProbeAgg> = Object.fromEntries(PROBE_KEYS.map((k) => [k, newAgg()]));
+      const kept = new Set<string>(), dropped = new Set<string>();
+      try {
+        const files: RecordingDay[] = [...(prev ? [{ day: prevDayOf(day), file: prev }] : []), { day, file: cur }];
+        linkDays(files, tmp);
+        await buildDataset(tmp, PROBE_STEP_SEC, model.params.referenceSigma, {
+          entryWindowOnly: true, entryWindowUpdown: window, volModel, calendar,
+          // a market that cannot give a row of this day (it closed before it, opens after it) or is not a 15-minute Up/Down contract: left out before any feature is computed
+          skipMarket: (m) => {
+            if ((m.kind ?? 'updown') !== 'updown' || m.closeTime <= dayStart || m.openTime >= dayEnd) return true;
+            if (!keep) return false;
+            if (keep.has(m.ticker)) { kept.add(m.ticker); return false; }
+            dropped.add(m.ticker);
+            return true;
+          },
+          onRow: (r) => {
+            if ((r.kind ?? 'updown') !== 'updown' || r.t < dayStart || r.t >= dayEnd) return; // the warm-up day's rows are not counted
+            const pModel = model.predictDetailed(r.fx, r.fv).p;
+            const row = { bid: r.bid, ask: r.ask, fv: r.fv, mid: r.mid, pModel, sigma: r.sigma, sigmaPricing: r.sigmaPricing ?? NaN, tauSec: r.tauSec, fx: r.fx };
+            // the four assets keep their own struct; every row (another asset's too) goes into `all`
+            if ((PROBE_ASSETS as readonly string[]).includes(r.asset)) addRow(aggs[r.asset], row, features);
+            addRow(aggs.all, row, features);
+          },
+        });
+      } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+      const file: ProbeFile = { v: PROBE_VERSION, src, day, step: PROBE_STEP_SEC, window, features, warm: Boolean(prev), ...(src === 'real' ? { contracts: { kept: kept.size, dropped: dropped.size } } : {}), volModel: volTag, assets: aggs };
+      const dest = path.join(o.out, probeFileName(src, day));
+      fs.writeFileSync(`${dest}.tmp`, JSON.stringify(file));
+      fs.renameSync(`${dest}.tmp`, dest);
+      written.push(dest);
+      say(`[twin] probe unit ${src}: ${aggs.all.n} rows kept${aggs.all.bad ? `, ${aggs.all.bad} left out (a number not finite)` : ''}, ${fmtSecs(performance.now() - t0)} s`);
+    }
+  }
+  return written;
+}
+
+/** A probe file read back and checked (a file of another version, or another shape, is refused with its name). */
+export async function readProbeFile(file: string): Promise<ProbeFile> {
+  const { checkProbeFile } = await import('./history/entryProbe');
+  let x: unknown;
+  try { x = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error(`${path.basename(file)} is not readable JSON`); }
+  const why = checkProbeFile(x);
+  if (why) throw new Error(`${path.basename(file)} is not a probe file this code reads: ${why}`);
+  return x as ProbeFile;
+}
+
+/** `--stage probe --dirs real=DIR,requote=DIR,depth=DIR --days A,B --model MODEL.json [--vol-model FILE] [--split-file FILE] --out DIR`: writes the probe files and prints the report of exactly those. */
+async function stageProbe(): Promise<void> {
+  const dirs: Partial<Record<ProbeSource, string>> = {};
+  for (const kv of arg('dirs').split(',').filter(Boolean)) { const i = kv.indexOf('='); if (i <= 0) throw new Error(`--dirs: "${kv.slice(0, 40)}" is not SOURCE=DIR`); (dirs as Record<string, string>)[kv.slice(0, i)] = kv.slice(i + 1); }
+  const written = await probeStage({ dirs, days: arg('days').split(',').filter(Boolean), modelFile: arg('model'), volModelFile: arg('vol-model') || undefined, out: arg('out', 'data/twin/probe'), splitFile: arg('split-file') || undefined });
+  const { probeReportLines } = await import('./history/entryProbe');
+  for (const l of probeReportLines(await Promise.all(written.map(readProbeFile)))) console.log(l);
+}
+
+/** The days a probe was asked for (`probe-days.json`, written by the workflow step beside the probe files), or undefined when the folder has none (an older run, or the stage run by hand:
+ *  the report then numbers the days that have a file). A file of another version or shape is refused by name; so is one that names a confirm day. */
+export async function readProbeDays(dir: string): Promise<string[] | undefined> {
+  const { checkProbeDays, PROBE_DAYS_FILE } = await import('./history/entryProbe');
+  const file = path.join(dir, PROBE_DAYS_FILE);
+  if (!fs.existsSync(file)) return undefined;
+  let x: unknown;
+  try { x = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw new Error(`${PROBE_DAYS_FILE} is not readable JSON`); }
+  const why = checkProbeDays(x);
+  if (why) throw new Error(`${PROBE_DAYS_FILE} is not a probe days file this code reads: ${why}`);
+  const days = (x as { days: string[] }).days, hit = days.filter((d) => CONFIRM_DAYS.includes(d));
+  if (hit.length) throw new Error(`the probe never reads a confirm day: ${dir}/${PROBE_DAYS_FILE} names ${hit.join(', ')}`);
+  return days;
+}
+
+/** `--stage probe-report --dir DIR`: the report of the probe files in DIR, from the files alone (a past run's files re-read, nothing recomputed). */
+async function stageProbeReport(): Promise<void> {
+  const dir = arg('dir');
+  if (!dir || !fs.existsSync(dir)) throw new Error(`--dir: ${dir || '(none)'} does not exist`);
+  const names = fs.readdirSync(dir).filter((f) => PROBE_FILE_RE.test(f)).sort();
+  const leak = names.map((f) => PROBE_FILE_RE.exec(f)![2]).filter((d) => CONFIRM_DAYS.includes(d));
+  if (leak.length) throw new Error(`the probe never reads a confirm day: ${dir} holds probe files of ${[...new Set(leak)].join(', ')}`);
+  const requested = await readProbeDays(dir);
+  const { probeReportLines } = await import('./history/entryProbe');
+  for (const l of probeReportLines(await Promise.all(names.map((f) => readProbeFile(path.join(dir, f)))), requested)) console.log(l);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Stage sweep: tune the depth simulator's 13 constants on the FIT days only, with the judge as the objective (a parameter search over an UNCALIBRATED model:
 // not the R2 per-asset calibration, which is stage calibrate; a sweep's params replace three of its multipliers when both meet, RUNBOOK 9).
 
@@ -2061,6 +2243,8 @@ export async function historyTwinMain(): Promise<void> {
   if (stage === 'backtest') return stageBacktest();
   if (stage === 'fill') return stageFill();
   if (stage === 'fastrows') return stageFastRows();
+  if (stage === 'probe') return stageProbe();
+  if (stage === 'probe-report') return stageProbeReport();
   if (stage === 'depth-model-check') return stageDepthModelCheck();
   if (stage === 'calibrate') return stageCalibrate();
   if (stage === 'calibration-check') return stageCalibrationCheck();

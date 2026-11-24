@@ -535,6 +535,8 @@ function allRunScripts(y: string): Array<{ at: number; script: string }> {
   return out;
 }
 const bash = (script: string, env: Record<string, string>, cwd = ROOT) => spawnSync('bash', ['-c', script], { cwd, env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env }, encoding: 'utf8' });
+/** A step the way GitHub runs it: the script in a file, run as `bash -e FILE` (a step with no `shell:` gets `bash -e {0}`; `bash` above runs `-c` with no -e, which hid every failure path of the probe step in R3b fix round 2). */
+const ghStep = (script: string, env: Record<string, string>, cwd = ROOT) => { const f = path.join(tmpDir(), 'step.sh'); fs.writeFileSync(f, script); return spawnSync('bash', ['-e', f], { cwd, env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env }, encoding: 'utf8' }); };
 
 test('every shell step of the workflow is valid bash', () => {
   const scripts = allRunScripts(wf());
@@ -4190,4 +4192,671 @@ test('R3a: the re-verdict job\'s report step reads the windows tree the windows 
   const none = positionsRun('reverdict', { split: 'dev', judged: J3, legs: null }); assert.equal(none.failed, undefined, none.out); assert.match(none.out, /^\[twin\] no per-position files on Drive for run 55$/m); assert.equal(none.sent, '');
   // a script missing or crashing: the job's windows read and verdict are already done; the step ends 0
   assert.equal(positionsRun('reverdict', { split: 'dev', judged: D2, script: 'missing' }).failed, undefined); assert.equal(positionsRun('reverdict', { split: 'dev', judged: D2, script: 'crash' }).failed, undefined);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// ---- R3b: the entry-state probe (research/history/entryProbe.ts; research/historyTwin.ts --stage probe and probe-report; REPORT ONLY) ----
+// Why does the decision model enter ETH, SOL and XRP on twin days and not on real days? The probe reads the state the policy reads at entry time (quote, fair
+// value, the model's price, sigma, every input feature), per source and asset, with no fill, no position and no outcome label. These tests are synthetic days
+// (tests/twinSweepSynth.ts), an identity decision model and a synthetic depth model; the workflow's own step is run as text with a stubbed Drive and gh.
+import { addRow, checkProbeFile, featureGaps, featureLines, histQuantile, MAX_DAY_LINES, mergeAgg, MIN_Z_N, newAgg, PROBE_ASSETS, PROBE_KEYS, PROBE_VERSION, probeReportLines, sourceLines, statSd, summarize, versusLine, type ProbeAgg, type ProbeFile, type ProbeRow } from '../research/history/entryProbe';
+import { probeGuards, probeStage, readProbeFile } from '../research/historyTwin';
+import { MetaModel } from '../bot/model/metaModel';
+
+const pr = (o: Partial<ProbeRow> & Pick<ProbeRow, 'bid' | 'ask' | 'fv' | 'pModel'>): ProbeRow => ({ mid: (o.bid + o.ask) / 2, sigma: 1e-4, sigmaPricing: 1e-4, tauSec: 600, fx: {}, ...o });
+/** Four rows with hand-worked answers (dollars in, cents out). */
+const FOUR_ROWS: ProbeRow[] = [
+  pr({ bid: 0.49, ask: 0.51, fv: 0.56, pModel: 0.58, sigma: 1e-4, sigmaPricing: 1.15e-4, tauSec: 600, fx: { a: 1, b: 10 } }),
+  pr({ bid: 0.60, ask: 0.61, fv: 0.60, pModel: 0.55, sigma: 1e-4, sigmaPricing: 1.15e-4, tauSec: 500, fx: { a: 2, b: 20 } }),
+  pr({ bid: 0.10, ask: 0.12, fv: 0.21, pModel: 0.10, sigma: 2e-4, sigmaPricing: 2.3e-4, tauSec: 400, fx: { a: 3, b: 30 } }),
+  pr({ bid: 0.90, ask: 0.91, fv: 0.905, pModel: 0.905, sigma: 2e-4, sigmaPricing: 2.3e-4, tauSec: 300, fx: { a: 4, b: NaN } }),
+];
+const aggOf = (rows: readonly ProbeRow[], feats = ['a', 'b']): ProbeAgg => { const a = newAgg(); for (const r of rows) addRow(a, r, feats); return a; };
+const close = (x: number, y: number, tol = 1e-9) => assert.ok(Math.abs(x - y) <= tol, `${x} vs ${y}`);
+
+test('R3b: the aggregate: means, shares, take edge, histogram quantiles, the sigma ratio and a Welford sd on four rows worked by hand', () => {
+  const a = aggOf(FOUR_ROWS), s = summarize(a)!;
+  assert.equal(s.n, 4); assert.equal(a.bad, 0);
+  close(s.spread.mean, 1.5); assert.equal(s.spread.p50, 1.0); assert.equal(s.spread.p90, 2.0);
+  // |fv-mid| in cents: 6, 0.5, 10, 0 (the 10 lands in the >=10c share: 0.21 - 0.11 is not 9.99999 after the 1e-6 rounding)
+  close(s.fvGap.mean, 4.125); assert.equal(s.fvGap.p50, 0.5); assert.equal(s.fvGap.p90, 10.0);
+  assert.deepEqual([s.fvGap.ge3, s.fvGap.ge5, s.fvGap.ge10], [0.5, 0.5, 0.25]);
+  // |pModel-mid|: 8, 5.5, 1, 0 and the signed mean (+8 - 5.5 - 1 + 0) / 4
+  close(s.pGap.mean, 3.625); assert.equal(s.pGap.p50, 1.0); assert.equal(s.pGap.p90, 8.0); close(s.pGap.signed, 0.375);
+  // take edge = max(pModel - ask, bid - pModel): 7, 5, 0, -0.5 cents; a 0 counts at >=0
+  assert.deepEqual(EDGE_STEPS_OF(s), [0.75, 0.5, 0.5, 0.25, 0]);
+  close(s.sigma, 1.5e-4, 1e-15); close(s.sigmaPricing, 1.725e-4, 1e-15); close(s.sigmaRatio, 1.15); close(s.tau, 450);
+  assert.deepEqual(s.mid, { p10: 11, p50: 50, p90: 90 });
+  // every model input: count, mean and the sample sd; a value that is not finite is not a value
+  assert.equal(a.fx.a.n, 4); close(a.fx.a.mean, 2.5); close(statSd(a.fx.a), Math.sqrt(5 / 3));
+  assert.equal(a.fx.b.n, 3); close(a.fx.b.mean, 20); close(statSd(a.fx.b), 10);
+  assert.ok(Number.isNaN(statSd({ n: 1, mean: 3, m2: 0 })) && Number.isNaN(statSd(undefined)));
+  // a row with a number the line needs that is not finite is counted apart and nowhere else
+  const z = aggOf([...FOUR_ROWS, pr({ bid: NaN, ask: 0.5, fv: 0.5, pModel: 0.5 }), pr({ bid: 0.5, ask: 0.51, fv: 0.5, pModel: Infinity })]);
+  assert.equal(z.n, 4); assert.equal(z.bad, 2); assert.deepEqual(z.mid, a.mid);
+  assert.equal(summarize(newAgg()), undefined); assert.equal(summarize(undefined), undefined);
+  // a quantile is the lower edge of the bin holding it; an empty histogram has none
+  assert.ok(Number.isNaN(histQuantile([0, 0, 0], 1, 0.5))); assert.equal(histQuantile([2, 0, 2], 0.5, 0.5), 0); assert.equal(histQuantile([2, 0, 2], 0.5, 0.9), 1.0); assert.equal(histQuantile([0, 3], 1, 0), 1);
+  // the two lines of a source and asset, as the spec words them
+  const [l1, l2] = sourceLines('real', 'BTC', s);
+  assert.equal(l1, '[twin] probe real BTC: rows 4, spread 1.5c (p50 1.0 p90 2.0), |fv-mid| 4.1c (p50 0.5 p90 10.0; >=3c 50.0% >=5c 50.0% >=10c 25.0%), |pModel-mid| 3.6c (p50 1.0 p90 8.0), pModel-mid +0.4c');
+  assert.equal(l2, '[twin] probe real BTC: take edge >=0c 75.0% >=2c 50.0% >=4c 50.0% >=6c 25.0% >=10c 0.0%, sigma 1.50e-4, sigmaPricing/sigma 1.150, tau 450 s, mid p10/p50/p90 11/50/90c');
+  assert.deepEqual(sourceLines('depth', 'XRP', undefined, ' day 2'), ['[twin] probe depth day 2 XRP: rows 0']);
+});
+const EDGE_STEPS_OF = (s: NonNullable<ReturnType<typeof summarize>>) => [s.edge.ge0, s.edge.ge2, s.edge.ge4, s.edge.ge6, s.edge.ge10];
+
+test('R3b: two aggregates add: counts, histograms, sums and the Welford sd of a pooled aggregate equal the one pass over every row, in any split', () => {
+  const rows: ProbeRow[] = Array.from({ length: 40 }, (_, i) => pr({ bid: 0.3 + (i % 7) * 0.05, ask: 0.32 + (i % 7) * 0.05 + (i % 3) * 0.01, fv: 0.2 + (i % 11) * 0.06, pModel: 0.25 + (i % 5) * 0.12, sigma: 1e-4 + i * 1e-6, sigmaPricing: 1.2e-4 + i * 1e-6, tauSec: 300 + i * 10, fx: { a: Math.sin(i), b: i * i / 7 } }));
+  const whole = aggOf(rows);
+  for (const cut of [1, 13, 20, 39]) {
+    const m = mergeAgg(aggOf(rows.slice(0, cut)), aggOf(rows.slice(cut)));
+    assert.equal(m.n, whole.n); assert.deepEqual(m.mid, whole.mid); assert.deepEqual(m.spread.h, whole.spread.h); assert.deepEqual(m.fvGap.h, whole.fvGap.h); assert.deepEqual(m.pGap.h, whole.pGap.h); assert.deepEqual(m.edge, whole.edge);
+    assert.deepEqual([m.fvGap.ge3, m.fvGap.ge5, m.fvGap.ge10], [whole.fvGap.ge3, whole.fvGap.ge5, whole.fvGap.ge10]);
+    for (const k of ['sigma', 'sigmaPricing', 'tau'] as const) close(m[k], whole[k], 1e-12);
+    close(m.spread.sum, whole.spread.sum); close(m.pGap.signed, whole.pGap.signed);
+    for (const k of ['a', 'b']) { assert.equal(m.fx[k].n, whole.fx[k].n); close(m.fx[k].mean, whole.fx[k].mean, 1e-9); close(statSd(m.fx[k]), statSd(whole.fx[k]), 1e-9); }
+  }
+  // a feature one side never saw is carried over as it is; the inputs are not changed by a merge
+  const left = aggOf(rows.slice(0, 5), ['a']), right = aggOf(rows.slice(5, 9), ['b']), before = JSON.stringify([left, right]);
+  const m = mergeAgg(left, right); assert.equal(m.fx.a.n, 5); assert.equal(m.fx.b.n, 4); assert.equal(JSON.stringify([left, right]), before);
+  assert.deepEqual(summarize(mergeAgg(newAgg(), whole)), summarize(whole));
+});
+
+test('R3b: the feature gaps are in real within-asset standard deviations: (twin mean - real mean) / real sd, the largest |z| first, only where both sides have enough values and real has a spread', () => {
+  const mk = (shift: Record<string, number>, n = 20) => aggOf(Array.from({ length: n }, (_, i) => pr({ bid: 0.4, ask: 0.42, fv: 0.5, pModel: 0.5, fx: { a: (i % 2 ? 1 : -1) + (shift.a ?? 0), b: i + (shift.b ?? 0), c: 5, e: i % 2 + (shift.e ?? 0), zz: (i % 4) * 0.1 + (shift.zz ?? 0) } })), ['a', 'b', 'c', 'e', 'zz']);
+  const real = mk({}), twin = mk({ a: 2, b: 10, zz: 3 });
+  const gaps = featureGaps(real, twin);
+  assert.deepEqual(gaps.map((g) => g.name), ['zz', 'a', 'b', 'e'], 'ordered by |z|; the constant c has no z');
+  const z = (n: string) => gaps.find((g) => g.name === n)!.z;
+  close(z('a'), 2 / statSd(real.fx.a)); close(z('b'), 10 / statSd(real.fx.b)); close(z('zz'), 3 / statSd(real.fx.zz)); close(z('e'), 0);
+  assert.ok(gaps.every((g, i) => i === 0 || Math.abs(gaps[i - 1].z) >= Math.abs(g.z)));
+  assert.equal(featureGaps(real, twin, 2).length, 2);
+  // a negative gap, a feature the twin lacks, a side with fewer than MIN_Z_N values, a missing side
+  const lacking = aggOf(Array.from({ length: 20 }, () => pr({ bid: 0.4, ask: 0.42, fv: 0.5, pModel: 0.5, fx: { a: -2 } })), ['a']);
+  assert.deepEqual(featureGaps(real, lacking).map((g) => g.name), ['a'], 'the twin has no other feature'); close(featureGaps(real, lacking)[0].z, -2 / statSd(real.fx.a));
+  assert.match(featureLines('requote', 'BTC', featureGaps(real, lacking))[0], /^\[twin\] probe requote vs real BTC features 1\/1: feature a z=-1\.95 \(real 0, twin -2\)$/, 'a negative gap, and floating-point noise around zero prints as 0');
+  assert.deepEqual(featureGaps(real, mk({}, MIN_Z_N - 1)), []); assert.deepEqual(featureGaps(undefined, twin), []); assert.deepEqual(featureGaps(real, undefined), []);
+  // the lines: the spec's form, 3 to a line, every line a [twin] probe line under 300 characters
+  const lines = featureLines('depth', 'ETH', gaps);
+  assert.match(lines[0], /^\[twin\] probe depth vs real ETH features 1\/2: feature zz z=\+\d+\.\d\d \(real [\d.-]+, twin [\d.-]+\); feature a z=\+\d+\.\d\d \(real 0, twin 2\); feature b z=/);
+  assert.equal(lines.length, 2); assert.match(lines[1], /^\[twin\] probe depth vs real ETH features 2\/2: feature e z=\+0\.00 /);
+  assert.deepEqual(featureLines('depth', 'XRP', []), ['[twin] probe depth vs real XRP features: none with enough values on both sides']);
+  // the longest feature name of the engine is 30 characters (taconf_volatility_reversal_15m): three of them with the widest numbers still fit a commit comment's 300
+  const wide = Array.from({ length: 8 }, () => ({ name: 'taconf_volatility_reversal_15m', z: -999.994, real: -1.234e-10, twin: -1.234e-10 })); const wl = featureLines('requote', 'SOL', wide);
+  assert.equal(wl.length, 3); for (const l of wl) assert.ok(l.length < 300, `${l.length}`);
+  // the twin-against-real line: ratios of counts and means, the shares side by side
+  const t = summarize(aggOf(FOUR_ROWS))!, r = summarize(aggOf(FOUR_ROWS.slice(0, 2)))!;
+  assert.equal(versusLine('depth', 'BTC', t, r), '[twin] probe depth vs real BTC: rows ratio 2.00, spread ratio 1.00, |fv-mid| ratio 1.27, |pModel-mid| ratio 0.54, take edge >=2c 50.0% vs 100.0%, >=4c 50.0% vs 100.0%, >=6c 25.0% vs 50.0%, |fv-mid| >=5c 50.0% vs 50.0%, sigma ratio 1.50, mid p50 50c vs 50c');
+  assert.equal(versusLine('requote', 'SOL', t, undefined, ' day 2'), '[twin] probe requote vs real day 2 SOL: rows 4 vs 0, nothing to compare');
+});
+
+const PROBE_WARM = '2026-11-12', PROBE_DAY = '2026-11-13';
+interface ProbeWorld { root: string; real: string; req: string; reqSol: string; dep: string; modelFile: string; depthModel: string; features: string[] }
+let probeWorldMemo: Promise<ProbeWorld> | undefined;
+/** Two days (a warm-up day and the probe day), six 15-minute contracts per asset and day. The real days are depth fill-ins of a day of four assets (BTC, ETH, SOL and
+ *  HYPE, an asset outside the probe's four; not DOGE, which the replay leaves out by default (REPLAY_EXCLUDE): a contract the twin may not hold, another seed); the requote days (the twin) hold BTC and ETH, `reqSol` BTC, ETH, SOL and HYPE; the depth days are the requote days
+ *  filled in. The decision model is the identity model (its price is the builder's fair value), so no trained model is needed. The last contract of an asset in a file
+ *  never settles inside it (the builder flushes a contract 60 s after its close), so 5 of the 6 give rows. */
+const probeWorld = (): Promise<ProbeWorld> => (probeWorldMemo ??= (async () => {
+  const root = tmpDir(), mk = (n: string) => { const p = path.join(root, n); fs.mkdirSync(p, { recursive: true }); return p; };
+  const real = mk('real'), req = mk('req'), reqSol = mk('reqSol'), dep = mk('dep');
+  const features = [...MetaModel.identity().params.features];
+  const modelFile = path.join(root, 'model.json'); fs.writeFileSync(modelFile, JSON.stringify({ version: 'identity', kind: 'identity', features, referenceSigma: 5e-5 }));
+  const depthModel = path.join(root, 'depth_model.json'); fs.writeFileSync(depthModel, JSON.stringify({ ...synthModel(), schema: DEPTH_MODEL_SCHEMA }));
+  const lib = readDepthModel(depthModel)!;
+  for (const [i, d] of [PROBE_WARM, PROBE_DAY].entries()) {
+    const raw = path.join(root, `raw-${d}.jsonl.gz`); writeEventsGz(raw, synthRequoteDay({ day: d, assets: ['BTC', 'ETH', 'SOL', 'HYPE'], windows: 6, seed: 40 + i, startHour: 0 }));
+    await fillDayFile(raw, path.join(real, `md-${d}.jsonl.gz`), { how: 'depth' }, lib);
+    writeEventsGz(path.join(req, `md-${d}.jsonl.gz`), synthRequoteDay({ day: d, assets: ['BTC', 'ETH'], windows: 6, seed: 3 + i, startHour: 0 }));
+    writeEventsGz(path.join(reqSol, `md-${d}.jsonl.gz`), synthRequoteDay({ day: d, assets: ['BTC', 'ETH', 'SOL', 'HYPE'], windows: 6, seed: 3 + i, startHour: 0 }));
+    await fillDayFile(path.join(req, `md-${d}.jsonl.gz`), path.join(dep, `md-${d}.jsonl.gz`), { how: 'depth' }, lib);
+  }
+  return { root, real, req, reqSol, dep, modelFile, depthModel, features };
+})());
+const readProbe = (f: string): ProbeFile => JSON.parse(fs.readFileSync(f, 'utf8'));
+let probeMainMemo: Promise<{ out: string; written: string[]; files: ProbeFile[] }> | undefined;
+/** The main run: real, requote and depth, the probe day (the warm-up day is read, not counted). */
+const probeMain = (): Promise<{ out: string; written: string[]; files: ProbeFile[] }> => (probeMainMemo ??= (async () => {
+  const w = await probeWorld(), out = path.join(tmpDir(), 'probe'), lines: string[] = [];
+  const written = await probeStage({ dirs: { real: w.real, requote: w.req, depth: w.dep }, days: [PROBE_DAY], modelFile: w.modelFile, out, log: (l) => lines.push(l) });
+  assert.equal(lines.length, 3); for (const l of lines) assert.match(l, /^\[twin\] probe unit (real|requote|depth): \d+ rows kept, \d+(\.\d+)? s$/);
+  return { out, written, files: written.map(readProbe) };
+})());
+
+test('R3b: the probe writes one file per source and day, split by asset (the four assets and all, another asset only in all), with the real day kept to the requote day\'s contracts and the dropped ones counted', async () => {
+  const w = await probeWorld(), { written, files } = await probeMain();
+  assert.deepEqual(written.map((f) => path.basename(f)), ['real', 'requote', 'depth'].map((s) => `probe-${s}-${PROBE_DAY}.json`), 'date order, then real, requote, depth');
+  const [real, requote, depth] = files, n = (f: ProbeFile, k: string) => f.assets[k].n;
+  for (const f of files) {
+    assert.equal(f.v, PROBE_VERSION); assert.equal(f.day, PROBE_DAY); assert.equal(f.step, 15); assert.deepEqual(f.window, [840, 300]); assert.deepEqual(f.features, w.features); assert.equal(f.warm, true, 'the day before was read'); assert.equal(f.volModel, 'none');
+    assert.deepEqual(Object.keys(f.assets), [...PROBE_KEYS], 'BTC, ETH, SOL, XRP, all');
+    assert.equal(checkProbeFile(f), undefined);
+    assert.ok(n(f, 'BTC') > 0 && n(f, 'ETH') > 0, `${f.src}: rows for both assets of the twin`);
+    assert.equal(n(f, 'SOL'), 0, `${f.src}: no SOL contract in the twin's list`); assert.equal(n(f, 'XRP'), 0);
+    assert.equal(n(f, 'all'), n(f, 'BTC') + n(f, 'ETH'), `${f.src}: every row of the four assets is also in all`);
+    for (const k of ['BTC', 'ETH']) { const a = f.assets[k]; assert.equal(a.bad, 0); assert.equal(a.mid.reduce((x, y) => x + y, 0), a.n, 'a histogram holds every row'); assert.equal(Object.keys(a.fx).length, w.features.length, `every model input is a feature stat (${f.src} ${k})`); for (const feat of w.features) assert.ok(a.fx[feat].n > 0, feat); }
+  }
+  // the real day: 12 contracts of the twin's list kept, the other 12 (SOL and HYPE) dropped: counted, never printed by name; the twin files have no such field
+  assert.deepEqual(real.contracts, { kept: 12, dropped: 12 }); assert.equal(requote.contracts, undefined); assert.equal(depth.contracts, undefined);
+  // the same contracts on every side: the same number of rows in real and requote (the same market grid and quotes), and the real SOL day is not in the real file
+  assert.equal(n(real, 'BTC'), n(requote, 'BTC')); assert.equal(n(real, 'ETH'), n(depth, 'ETH'));
+  // with a requote day that lists SOL and HYPE the real day keeps them: the restriction is the requote day's contract list, nothing else; HYPE is only in `all`
+  const out2 = path.join(tmpDir(), 'sol'), sol = (await probeStage({ dirs: { real: w.real, requote: w.reqSol }, days: [PROBE_DAY], modelFile: w.modelFile, out: out2, log: () => {} })).map(readProbe);
+  assert.deepEqual(sol.map((f) => f.src), ['real', 'requote']); assert.deepEqual(sol[0].contracts, { kept: 24, dropped: 0 });
+  for (const f of sol) { assert.ok(n(f, 'SOL') > 0, `${f.src}: SOL rows now`); assert.equal(n(f, 'XRP'), 0); assert.ok(n(f, 'all') - (n(f, 'BTC') + n(f, 'ETH') + n(f, 'SOL')) > 0, `${f.src}: HYPE rows are only in all`); }
+  assert.ok(n(sol[0], 'SOL') > 0 && n(real, 'SOL') === 0);
+  // a probe of one source alone (no real, so no contract list needed), and the real source needs the requote folder beside it
+  const only = await probeStage({ dirs: { requote: w.req }, days: [PROBE_DAY], modelFile: w.modelFile, out: path.join(tmpDir(), 'one'), log: () => {} }); assert.deepEqual(only.map((f) => path.basename(f)), [`probe-requote-${PROBE_DAY}.json`]);
+  await assert.rejects(() => probeStage({ dirs: { real: w.real }, days: [PROBE_DAY], modelFile: w.modelFile, out: path.join(tmpDir(), 'norq'), log: () => {} }), /needs requote=DIR beside real=DIR/);
+  await assert.rejects(() => probeStage({ dirs: { requote: w.req, bogus: w.req } as never, days: [PROBE_DAY], modelFile: w.modelFile, out: path.join(tmpDir(), 'bg'), log: () => {} }), /unknown source "bogus"/);
+  await assert.rejects(() => probeStage({ dirs: { requote: w.req }, days: [PROBE_DAY], modelFile: path.join(w.root, 'nope.json'), out: path.join(tmpDir(), 'nm'), log: () => {} }), /--model: .* does not exist/);
+});
+
+test('R3b: only the rows of the probe day are counted: a contract that crosses midnight gives the day after midnight its own rows only, the warm-up day is read and not counted', async () => {
+  const w = await probeWorld(), dir = path.join(tmpDir(), 'straddle'); fs.mkdirSync(dir);
+  // three contracts of BTC: 23:37:30 to 23:52:30, 23:52:30 to 00:07:30 (crosses midnight), 00:07:30 to 00:22:30 (its quotes let the second settle); the stream cut at midnight into the two day files
+  const evs = synthRequoteDay({ day: PROBE_WARM, assets: ['BTC'], windows: 3, startHour: 23.625, seed: 5 }), midnight = Date.parse(`${PROBE_DAY}T00:00:00Z`);
+  writeEventsGz(path.join(dir, `md-${PROBE_WARM}.jsonl.gz`), evs.filter((e) => e.t < midnight)); writeEventsGz(path.join(dir, `md-${PROBE_DAY}.jsonl.gz`), evs.filter((e) => e.t >= midnight));
+  const run = async (day: string, name: string) => readProbe((await probeStage({ dirs: { requote: dir }, days: [day], modelFile: w.modelFile, out: path.join(tmpDir(), name), log: () => {} }))[0]);
+  const next = await run(PROBE_DAY, 'next'), prev = await run(PROBE_WARM, 'prev');
+  // the crossing contract's entry window is 23:53:30 to 00:02:30 (840 to 300 s before its close): its rows at 00:00:00 to 00:02:30, 15 s apart, are the next day's
+  // (11 rows); the 26 before midnight are not (the builder alone, over both files, gives 37 rows for the contract)
+  assert.equal(next.assets.all.n, 11); assert.equal(next.warm, true);
+  // the day before has no day before it here (the cold start is said), and it settles only what its own file settles: the first contract's 37 rows
+  assert.equal(prev.assets.all.n, 37); assert.equal(prev.warm, false);
+  // the report says the day started cold
+  assert.ok(probeReportLines([prev]).some((l) => /^\[twin\] probe day 1: no warm-up day read for requote \(the first rows of the day start cold\)$/.test(l)));
+});
+
+test('R3b: the vol model is applied as the backtest applies it (only a validated one moves sigma; one beside the model is found, --vol-model wins) and the file says which it was', async () => {
+  const w = await probeWorld(), vm = (validated: boolean, mult: number) => JSON.stringify({ version: 'test', features: ['log_sigma_ewma'], gbdt: { trees: [], baseScore: Math.log(mult) }, tauMin: [1, 15], validation: { rows: 1, holdoutRows: 1, holdoutDays: 1, qlikeEwma: 1, qlikeModel: 1, improvement: { mean: 0, lo: 0, hi: 0 }, validated }, trainedAt: 'x' });
+  const model = (name: string, volJson?: string) => { const d = path.join(tmpDir(), name); fs.mkdirSync(d); fs.copyFileSync(w.modelFile, path.join(d, 'model.json')); if (volJson) fs.writeFileSync(path.join(d, 'vol_model.json'), volJson); return d; };
+  const run = async (file: string, vol?: string) => readProbe((await probeStage({ dirs: { requote: w.req }, days: [PROBE_DAY], modelFile: file, volModelFile: vol, out: path.join(tmpDir(), 'v'), log: () => {} }))[0]);
+  const ratio = (f: ProbeFile) => f.assets.all.sigmaPricing / f.assets.all.sigma;
+  const none = await run(path.join(model('none'), 'model.json')); assert.equal(none.volModel, 'none'); close(ratio(none), 1);
+  const beside = await run(path.join(model('beside', vm(true, 1.5)), 'model.json')); assert.equal(beside.volModel, 'validated'); close(ratio(beside), 1.5, 1e-9); assert.equal(beside.assets.all.n, none.assets.all.n, 'the same rows (the multiplier moves the price, not the sample)');
+  const unval = await run(path.join(model('unval', vm(false, 1.5)), 'model.json')); assert.equal(unval.volModel, 'unvalidated'); close(ratio(unval), 1);
+  const given = path.join(tmpDir(), 'given.json'); fs.writeFileSync(given, vm(true, 1.25));
+  const over = await run(path.join(model('over', vm(true, 1.5)), 'model.json'), given); assert.equal(over.volModel, 'validated'); close(ratio(over), 1.25, 1e-9);
+  assert.notDeepEqual(beside.assets.all.fvGap.h, none.assets.all.fvGap.h, 'the validated multiplier changes the fair value the probe prices with');
+  assert.match(probeReportLines([beside])[1], /vol model validated/);
+});
+
+test('R3b: the probe never reads a confirm day: a confirm day in --days, a confirm day file in any source folder, a split on record that judges one or is the confirm split, a probe file of one: each fails loudly and nothing is written', async () => {
+  const w = await probeWorld(), tmp = tmpDir(), out = (n: string) => path.join(tmp, n), CD = CONFIRM_DAYS[0];
+  const refuse = async (o: { days: string[]; dirs?: Record<string, string>; splitFile?: string }, re: RegExp, name: string) => {
+    await assert.rejects(() => probeStage({ dirs: { requote: w.req, ...(o.dirs ?? {}) }, days: o.days, modelFile: w.modelFile, out: out(name), splitFile: o.splitFile, log: () => {} }), re, name);
+    assert.ok(!fs.existsSync(out(name)), `${name}: nothing was written, not even the folder`);
+  };
+  await refuse({ days: [CD] }, /never reads a confirm day \(2026-11-18\)/, 'one');
+  await refuse({ days: [PROBE_DAY, CONFIRM_DAYS[2]] }, /never reads a confirm day \(2026-11-20\)/, 'two');
+  const bad = path.join(tmp, 'badreal'); fs.mkdirSync(bad); writeEventsGz(path.join(bad, `md-${CONFIRM_DAYS[1]}.jsonl.gz`), []); fs.copyFileSync(path.join(w.real, `md-${PROBE_DAY}.jsonl.gz`), path.join(bad, `md-${PROBE_DAY}.jsonl.gz`));
+  await refuse({ days: [PROBE_DAY], dirs: { real: bad } }, /never reads a confirm day: the real folder holds 2026-11-19/, 'folder');
+  await refuse({ days: [PROBE_DAY], dirs: { depth: bad } }, /the depth folder holds 2026-11-19/, 'folder2');
+  const split = (sp: object) => { const f = path.join(tmp, `split-${fs.readdirSync(tmp).length}.json`); fs.writeFileSync(f, JSON.stringify(sp)); return f; };
+  await refuse({ days: [PROBE_DAY], splitFile: split({ name: 'confirm', fit: [...SPLITS.confirm.fit], judge: [...SPLITS.confirm.judge], warm: [] }) }, /dev and custom splits only/, 'confirm split');
+  await refuse({ days: [PROBE_DAY], splitFile: split({ name: 'custom', fit: ['2026-11-11'], judge: [PROBE_DAY, CD], warm: [] }) }, /the confirm days \(2026-11-18\) are read only through split=confirm/, 'a custom split judging a confirm day');
+  await refuse({ days: [PROBE_DAY], splitFile: path.join(tmp, 'nosplit.json') }, /no split in /, 'no split');
+  await refuse({ days: [] }, /needs --days/, 'nodays'); await refuse({ days: ['2026-02-30'] }, /not a YYYY-MM-DD day/, 'baddays');
+  // a dev split on record is accepted
+  assert.equal((await probeStage({ dirs: { requote: w.req }, days: [PROBE_DAY], modelFile: w.modelFile, out: out('dev'), splitFile: split({ name: 'dev', fit: [...SPLITS.dev.fit], judge: [...SPLITS.dev.judge], warm: [] }), log: () => {} })).length, 1);
+  // the guard is a function of its own too
+  assert.throws(() => probeGuards({ days: [CD], dirs: {} }), /never reads a confirm day/); assert.doesNotThrow(() => probeGuards({ days: [PROBE_DAY], dirs: { requote: w.req } }));
+  // the command line: a non-zero exit with the one [twin] ERROR line, and no output folder; probe-report refuses a folder holding a probe file of a confirm day and prints nothing
+  const cliOut = out('cli'), r = twinCli('--stage', 'probe', '--dirs', `requote=${w.req}`, '--days', CD, '--model', w.modelFile, '--out', cliOut);
+  assert.notEqual(r.status, 0); assert.match(r.stderr, /^\[twin\] ERROR: the probe never reads a confirm day \(2026-11-18\)/m); assert.equal(r.stdout, ''); assert.ok(!fs.existsSync(cliOut));
+  const rep = path.join(tmp, 'rep'); fs.mkdirSync(rep); fs.writeFileSync(path.join(rep, `probe-real-${CD}.json`), '{}');
+  const rr = twinCli('--stage', 'probe-report', '--dir', rep); assert.notEqual(rr.status, 0); assert.match(rr.stderr, /^\[twin\] ERROR: the probe never reads a confirm day: .* holds probe files of 2026-11-18/m); assert.equal(rr.stdout, '');
+});
+
+test('R3b: the command line writes the very files the library does (two runs, two processes, byte-identical), prints a report that probe-report prints again from the files alone, and the lines carry counts, cents, shares and z-scores only', async () => {
+  const w = await probeWorld(), main = await probeMain(), out = path.join(tmpDir(), 'cli');
+  const r = twinCli('--stage', 'probe', '--dirs', `real=${w.real},requote=${w.req},depth=${w.dep}`, '--days', PROBE_DAY, '--model', w.modelFile, '--out', out);
+  assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  assert.deepEqual(fs.readdirSync(out).sort(), fs.readdirSync(main.out).sort(), 'no temporary folder or file is left behind');
+  for (const f of fs.readdirSync(main.out)) assert.ok(fs.readFileSync(path.join(out, f)).equals(fs.readFileSync(path.join(main.out, f))), `${f} is byte-identical across runs`);
+  const printed = r.stdout.split('\n').filter(Boolean), units = printed.filter((l) => /^\[twin\] probe unit /.test(l)), live = printed.filter((l) => !/^\[twin\] probe unit /.test(l));
+  assert.equal(units.length, 3); assert.equal(live.length, printed.length - 3);
+  // probe-report: the same lines, from the files alone, and the same as the library's from the files the main run wrote
+  const rep = okCli('--stage', 'probe-report', '--dir', out).split('\n').filter(Boolean);
+  assert.deepEqual(rep, live); assert.deepEqual(rep, probeReportLines(main.files));
+  assert.deepEqual(rep, probeReportLines([...main.files].reverse()), 'the order the files are read in does not matter');
+  // public: no date, ticker, time of day, long number; every line a probe line under the comment's 300 characters
+  publicSafe(rep, 'the probe report'); for (const l of rep) assert.match(l, /^\[twin\] probe[: ]/);
+  assert.ok(!/KX|2026|T\d\d:/.test(rep.join('\n')) && !/KX/.test(units.join('\n')));
+  // what the report says: the header, the pricing and reading notes, the real contracts kept and dropped (a count), two lines per source and asset, the twin-against-real lines, the closing summary
+  assert.match(rep[0], /^\[twin\] probe: 1 day\(s\) \(day 1 to 1 in date order\), sources real requote depth, 15 s step, entry window 840 to 300 s before close, 8 model input feature\(s\); the report pools the 1 day\(s\) every source has$/);
+  assert.match(rep[1], /^\[twin\] probe pricing: .*without the TA tilt or rule shifts$/); assert.match(rep[2], /^\[twin\] probe reading: take edge = max\(pModel - ask, bid - pModel\);/);
+  assert.ok(rep.includes('[twin] probe real day 1: contracts kept 12, dropped 12 (a real contract the requote day\'s contract list does not hold is left out, so real and twin cover the same contracts)'));
+  for (const s of ['real', 'requote', 'depth']) for (const k of ['BTC', 'ETH', 'SOL', 'XRP', 'all']) {
+    const mine = rep.filter((l) => l.startsWith(`[twin] probe ${s} ${k}:`)); assert.equal(mine.length, k === 'SOL' || k === 'XRP' ? 1 : 2, `${s} ${k}`);
+    if (k === 'BTC') { assert.match(mine[0], /rows \d+, spread \d+\.\dc \(p50 [\d.]+ p90 [\d.]+\), \|fv-mid\| [\d.]+c \(p50 [\d.]+ p90 [\d.]+; >=3c [\d.]+% >=5c [\d.]+% >=10c [\d.]+%\), \|pModel-mid\| [\d.]+c \(p50 [\d.]+ p90 [\d.]+\), pModel-mid [+-][\d.]+c$/); assert.match(mine[1], /take edge >=0c [\d.]+% >=2c [\d.]+% >=4c [\d.]+% >=6c [\d.]+% >=10c [\d.]+%, sigma [\d.]+e-\d+, sigmaPricing\/sigma 1\.000, tau \d+ s, mid p10\/p50\/p90 \d+\/\d+\/\d+c$/); }
+  }
+  for (const t of ['requote', 'depth']) { for (const k of ['BTC', 'ETH', 'all']) assert.ok(rep.some((l) => l.startsWith(`[twin] probe ${t} vs real ${k}: rows ratio 1.00, spread ratio `)) || rep.some((l) => l.startsWith(`[twin] probe ${t} vs real ${k}: rows ratio `)), `${t} vs real ${k}`); assert.ok(rep.some((l) => l.startsWith(`[twin] probe ${t} vs real day 1 BTC: rows ratio `)), 'the per-day lines name days day 1..N'); }
+  const feat = rep.filter((l) => /^\[twin\] probe requote vs real BTC features /.test(l)); assert.equal(feat.length, 3, '8 features, 3 to a line'); assert.match(feat[0], /^\[twin\] probe requote vs real BTC features 1\/3: feature [a-z_0-9]+ z=[+-]\d+\.\d\d \(real [-\d.e]+, twin [-\d.e]+\); feature /);
+  assert.match(rep[rep.length - 1], /^\[twin\] probe summary: the largest take-edge \(>=4c\) share gap against real is requote (BTC|ETH) [+-]\d+\.\d points \(twin \d+\.\d% vs real \d+\.\d%\); depth (BTC|ETH) [+-]\d+\.\d points \(twin \d+\.\d% vs real \d+\.\d%\)$/);
+  // the unit lines are counts and seconds
+  for (const l of units) assert.match(l, /^\[twin\] probe unit (real|requote|depth): \d+ rows kept, \d+(\.\d+)? s$/);
+  // a folder with no probe file (a run made before round R3b): one line, exit 0; a file of another version or shape is refused by name
+  const none = path.join(tmpDir(), 'none'); fs.mkdirSync(none); assert.equal(okCli('--stage', 'probe-report', '--dir', none).trim(), '[twin] probe report: no probe files (a run made before round R3b has none)');
+  const old = path.join(tmpDir(), 'old'); fs.mkdirSync(old); fs.writeFileSync(path.join(old, `probe-real-${PROBE_DAY}.json`), JSON.stringify({ ...main.files[0], v: 99 }));
+  const bad = twinCli('--stage', 'probe-report', '--dir', old); assert.notEqual(bad.status, 0); assert.match(bad.stderr, /^\[twin\] ERROR: probe-real-2026-11-13\.json is not a probe file this code reads: version 99, this code reads version 1/m);
+  assert.notEqual(twinCli('--stage', 'probe-report', '--dir', path.join(old, 'nope')).status, 0);
+  await assert.rejects(() => readProbeFile(path.join(none, 'missing.json')), /missing\.json is not readable JSON/); fs.writeFileSync(path.join(none, 'junk.json'), '{not json'); await assert.rejects(() => readProbeFile(path.join(none, 'junk.json')), /is not readable JSON/);
+});
+
+/** A probe file made of rows: `spec` = asset: [rows, how many of them have a take edge of 9 cents (the rest -1 cent)]; the feature f1 sits 3 higher in a twin than in real. */
+const fixFile = (src: ProbeFile['src'], day: string, spec: Record<string, [number, number]>, o: Partial<ProbeFile> = {}): ProbeFile => {
+  const assets = Object.fromEntries(PROBE_KEYS.map((k) => [k, newAgg()])) as Record<string, ProbeAgg>;
+  for (const [a, [n, k]] of Object.entries(spec)) for (let i = 0; i < n; i++) { const row = pr({ bid: 0.49, ask: 0.51, fv: 0.5, pModel: i < k ? 0.6 : 0.5, fx: { f1: (i % 5) + (src === 'real' ? 0 : 3), f2: i % 3 } }); addRow(assets[a], row, ['f1', 'f2']); addRow(assets.all, row, ['f1', 'f2']); }
+  return { v: PROBE_VERSION, src, day, step: 15, window: [840, 300], features: ['f1', 'f2'], warm: true, volModel: 'none', assets, ...(src === 'real' ? { contracts: { kept: 9, dropped: 3 } } : {}), ...o };
+};
+const FIX_SPEC: Record<ProbeFile['src'], Record<string, [number, number]>> = {
+  real: { BTC: [100, 10], ETH: [100, 2] }, requote: { BTC: [100, 12], ETH: [100, 20], SOL: [100, 50] }, depth: { BTC: [100, 11], ETH: [100, 40], SOL: [100, 60] },
+};
+const fixDays = (days: string[]) => days.flatMap((d) => (['real', 'requote', 'depth'] as const).map((s) => fixFile(s, d, FIX_SPEC[s])));
+
+test('R3b: the report from files alone: pooled over the days every source has, days named day 1..N in date order, a missing source or a cold day said, the closing line names the asset with the largest take-edge gap', () => {
+  const days = ['2026-11-13', '2026-11-14', '2026-11-16'], files = fixDays(days), lines = probeReportLines(files);
+  publicSafe(lines, 'the fixture report');
+  assert.equal(lines[0], '[twin] probe: 3 day(s) (day 1 to 3 in date order), sources real requote depth, 15 s step, entry window 840 to 300 s before close, 2 model input feature(s); the report pools the 3 day(s) every source has');
+  assert.match(lines.find((l) => l.startsWith('[twin] probe real BTC:'))!, /^\[twin\] probe real BTC: rows 300, /);
+  assert.ok(lines.includes('[twin] probe real day 2: contracts kept 9, dropped 3 (a real contract the requote day\'s contract list does not hold is left out, so real and twin cover the same contracts)'));
+  // BTC: real 10 of 100 with a take edge, requote 12, depth 11; ETH: 2 against 20 and 40; SOL has no real rows (no gap to name)
+  assert.match(lines.find((l) => l.startsWith('[twin] probe real BTC: take edge'))!, /take edge >=0c 10\.0% >=2c 10\.0% >=4c 10\.0% >=6c 10\.0% >=10c 0\.0%/);
+  assert.match(lines.find((l) => l.startsWith('[twin] probe depth vs real ETH:'))!, /^\[twin\] probe depth vs real ETH: rows ratio 1\.00, spread ratio 1\.00, .*take edge >=2c 40\.0% vs 2\.0%, >=4c 40\.0% vs 2\.0%, >=6c 40\.0% vs 2\.0%/);
+  assert.equal(lines[lines.length - 1], '[twin] probe summary: the largest take-edge (>=4c) share gap against real is requote ETH +18.0 points (twin 20.0% vs real 2.0%); depth ETH +38.0 points (twin 40.0% vs real 2.0%)');
+  assert.ok(lines.includes('[twin] probe requote vs real SOL: rows 300 vs 0, nothing to compare'));
+  assert.ok(lines.includes('[twin] probe depth vs real SOL features: none with enough values on both sides'));
+  assert.match(lines.find((l) => l.startsWith('[twin] probe requote vs real BTC features 1/1:'))!, /^\[twin\] probe requote vs real BTC features 1\/1: feature f1 z=\+2\.1\d \(real 2, twin 5\); feature f2 z=\+0\.00 \(real 0\.99, twin 0\.99\)$/);
+  for (const d of [1, 2, 3]) assert.ok(lines.some((l) => l.startsWith(`[twin] probe depth vs real day ${d} ETH:`)), `day ${d}`); assert.ok(!lines.some((l) => / day 4 /.test(l)));
+  assert.deepEqual(probeReportLines([...files].reverse()), lines, 'files in any order, the same report');
+  // a day a source has no file for is left out of the pooled lines and said; a day read without its warm-up day says so
+  const gap = files.filter((f) => !(f.src === 'depth' && f.day === days[1])).map((f) => (f.src === 'requote' && f.day === days[0] ? { ...f, warm: false } : f)), g = probeReportLines(gap);
+  assert.ok(g.includes('[twin] probe day 2: no file for depth (the day is left out of the pooled lines)')); assert.ok(g.includes('[twin] probe day 1: no warm-up day read for requote (the first rows of the day start cold)'));
+  assert.equal(g[0].replace(/ day\(s\)/g, ''), '[twin] probe: 3 (day 1 to 3 in date order), sources real requote depth, 15 s step, entry window 840 to 300 s before close, 2 model input feature(s); the report pools the 2 every source has');
+  assert.match(g.find((l) => l.startsWith('[twin] probe real BTC:'))!, /^\[twin\] probe real BTC: rows 200, /); assert.ok(!g.some((l) => / day 2 BTC:/.test(l)), 'no per-day line for the day that is not whole');
+  // many days: the pooled lines only
+  const many = probeReportLines(fixDays(Array.from({ length: MAX_DAY_LINES + 1 }, (_, i) => `2026-11-${String(11 + i).padStart(2, '0')}`)));
+  assert.ok(many.includes(`[twin] probe: ${MAX_DAY_LINES + 1} days, so the per-day lines are left out (the pooled lines above hold them)`)); assert.ok(!many.some((l) => / vs real day \d/.test(l)));
+  assert.equal(probeReportLines(fixDays(Array.from({ length: MAX_DAY_LINES }, (_, i) => `2026-11-${String(11 + i).padStart(2, '0')}`))).filter((l) => / vs real day \d+ BTC:/.test(l)).length, 2 * MAX_DAY_LINES, 'at the limit the per-day lines are printed');
+  // no real source, no common day, no file
+  assert.equal(probeReportLines(files.filter((f) => f.src !== 'real')).at(-1), '[twin] probe summary: no real source among the files, so no gap against real');
+  assert.ok(probeReportLines([fixFile('real', days[0], FIX_SPEC.real), fixFile('depth', days[1], FIX_SPEC.depth)]).includes('[twin] probe: no day is present in every source (real 1, depth 1): nothing to pool'));
+  assert.deepEqual(probeReportLines([]), ['[twin] probe report: no probe files (a run made before round R3b has none)']);
+  // a file of the wrong shape is named, not guessed at
+  assert.match(checkProbeFile({ v: 1, src: 'real', day: '2026-11-13', features: [], assets: { BTC: newAgg() } }) ?? '', /no per-asset aggregates/); assert.match(checkProbeFile({ ...files[0], src: 'lag' }) ?? '', /unknown source lag/); assert.match(checkProbeFile({ ...files[0], day: 'x' }) ?? '', /no day/); assert.match(checkProbeFile(null) ?? '', /not an object/);
+  // the assets the twin trades are exactly the four
+  assert.deepEqual([...PROBE_ASSETS], ['BTC', 'ETH', 'SOL', 'XRP']);
+});
+
+// ---- R3b: the workflow's inputs, refusals and step ----
+const PROBE_STEP = 'Entry-state probe (R3b, report only)';
+
+test('R3b: the workflow wires the probe: two inputs, a fast-route step after the fast rows that can never fail the job, the Drive keep of its files, the header', { skip: hasYaml ? false : 'python3 with PyYAML is not installed here' }, () => {
+  const y = wf(), { jobs, ins } = yamlDoc(), steps = jobs.build.steps as Array<{ name?: string; if?: string; 'continue-on-error'?: boolean; 'timeout-minutes'?: number; env?: Record<string, string>; run?: string }>;
+  assert.equal(ins.probe.type, 'boolean'); assert.equal(ins.probe.default, false); assert.match(ins.probe.description, /^FAST dev run only \(REPORT ONLY; refused with split=confirm, backtests and lag_arms, and without fast=true or model_drive\)/);
+  assert.ok([undefined, 'string'].includes(ins.probe_days.type), 'a text input'); assert.equal(ins.probe_days.default, ''); assert.equal(ins.probe_days.required, false); assert.match(ins.probe_days.description, /^probe only: .*empty = the split's judged days.*Never a confirm day$/);
+  assert.ok(Object.keys(ins).length <= 25, `${Object.keys(ins).length} inputs (GitHub allows 25)`);
+  const at = steps.findIndex((s) => s.name === PROBE_STEP), names = steps.map((s) => s.name ?? '');
+  assert.equal(names.filter((n) => n === PROBE_STEP).length, 1);
+  assert.ok(at > 0 && /^Fast rows/.test(names[at - 1]) && names[at + 1] === 'Keep the judged features', 'right after the fast rows, before the judged files are kept');
+  const s = steps[at];
+  assert.equal(s['continue-on-error'], true, 'it can never fail the job'); assert.ok(Number.isInteger(s['timeout-minutes']) && s['timeout-minutes']! > 0 && s['timeout-minutes']! <= 25, `a time limit that fits the reserve: ${s['timeout-minutes']}`);
+  // it runs on the fast route with probe=true, nowhere else (the split step refuses probe=true off the fast route and on confirm)
+  const on = (fast: string, probe: boolean) => new Function(`return (${s.if!.replace(/^\$\{\{ (.*) \}\}$/, '$1').replace(/steps\.split\.outputs\.fast/g, JSON.stringify(fast)).replace(/inputs\.probe/g, String(probe))});`)() as boolean;
+  assert.equal(s.if, "${{ steps.split.outputs.fast == 'true' && inputs.probe }}"); assert.deepEqual([on('true', true), on('true', false), on('false', true), on('false', false), on('', true)], [true, false, false, false, false]);
+  const script = s.run!, always = steps.filter((x) => /always\(\)/.test(x.if ?? '')).map((x) => x.name); assert.ok(!always.includes(PROBE_STEP), 'it is not an always() step: the reserve a cut leaves is not spent on it');
+  const r = spawnSync('bash', ['-n'], { input: script.replace(/\$\{\{.*?\}\}/g, 'X'), encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr);
+  const body = script.trimEnd().split('\n'); assert.equal(body[body.length - 1], 'exit 0', 'the last line of the step is exit 0'); assert.ok(/^set -uo pipefail$/m.test(script) && !/^\s*set -e/m.test(script), 'the step\'s own shell does not stop at the first failure (a subshell with -e does the work)');
+  assert.match(script, /\( set -euo pipefail; probe_run \) >> "\$STEP_LOG" 2>&1\n\s*rc=\$\?/);
+  // GitHub runs a step with no `shell:` as `bash -e {0}`: this shell turns -e off (a failing subshell must reach the WARNING and the exit 0), and the subshell that does the work is NOT in a `||` list (bash ignores -e inside one)
+  assert.match(script, /^set -uo pipefail\n(#.*\n)*set \+e\n/m, 'set +e right after set -uo pipefail'); assert.ok(!/probe_run \) [^\n]*\|\| /.test(script), 'the subshell is not the left side of a ||: -e would be ignored inside it');
+  assert.ok(!/^\s*shell:/m.test(y.slice(y.indexOf(`- name: ${PROBE_STEP}`), y.indexOf('- name: Keep the judged features'))), 'the step runs as GitHub runs a step with no shell: (bash -e {0}), which is what the tests run it as');
+  assert.match(script, /DP=\(\); \[ -z "\$\{DEPTH_PARAMS_RUN:-\}" \] \|\| DP=\(--depth-params data\/sweep\/best\.json\)/, 'the fast rows\' own depth parameters');
+  assert.match(script, /timeout --kill-after=30 300 node .* --stage fill /); assert.match(script, /timeout --kill-after=30 900 xargs -P "\$J" /); assert.match(script, /--split-file data\/twin\/split\.json/);
+  // the inner limits NEST inside the step's: the fill-in and the day passes, each with its 30 s to die, leave minutes for the Drive reads, the report and the comment (a cut ends in the WARNING and a report of the files written, never in GitHub's own limit with nothing said)
+  const inner = [...script.matchAll(/timeout --kill-after=(\d+) (\d+) /g)].map((m) => Number(m[1]) + Number(m[2]));
+  assert.equal(inner.length, 2, 'the fill-in and the day passes are the two inner limits'); assert.ok(inner.reduce((a, b) => a + b, 0) + 180 <= s['timeout-minutes']! * 60, `inner limits ${inner.join(' + ')} s plus 3 minutes of other work must fit the step's ${s['timeout-minutes']} minutes`);
+  // read only: Drive is read (get) and never written, deleted or synced; no artifact; no look is numbered; no verdict
+  assert.deepEqual([...script.matchAll(/drive_lab\.sh (\w+)/g)].map((m) => m[1]).filter((v, i, a) => a.indexOf(v) === i), ['get']);
+  assert.ok(!/twin-look|--stage (verdict|backtest|match|features|fastrows)|upload-artifact|cache\/save|rclone (sync|move|moveto|delete|deletefile|purge|rmdir|cleanup|rcat|copy)|--delete|--purge/.test(script));
+  assert.ok(!CONFIRM_DAYS.some((d) => script.includes(d)) && !/2026-11/.test(script), 'no day is named in the step: the days are the split\'s or the dispatcher\'s');
+  // its env: the model from Drive, the fast rows' own depth parameters, the judged days of the split
+  assert.deepEqual(Object.keys(s.env!).sort(), ['DEPTH_PARAMS_RUN', 'GH_TOKEN', 'JUDGE', 'MODEL_DRIVE', 'PROBE_DAYS', 'PROBE_HEAP_MB'].sort());
+  assert.equal(s.env!.JUDGE, '${{ steps.split.outputs.judge }}'); assert.equal(s.env!.PROBE_DAYS, '${{ inputs.probe_days }}'); assert.equal(s.env!.MODEL_DRIVE, '${{ inputs.model_drive }}'); assert.equal(s.env!.DEPTH_PARAMS_RUN, '${{ inputs.depth_params_run }}');
+  // the report reaches the build comment through build.log (its framing is untouched: the FRAME pin test holds) and a comment of its own
+  // build.log (the build comment's last 60 lines) gets the BOUNDED lines only (header, summary and the like): the whole report appended there would leave that window all probe lines
+  assert.match(script, /grep -E '\^\\\[twin\\\] probe\( summary\| report\)\?: ' "\$RUNNER_TEMP\/probe-lines\.txt" >> "\$L"/); assert.ok(!/cat "\$RUNNER_TEMP\/probe-lines\.txt" >> "\$L"/.test(script), 'the whole report is not appended to build.log'); assert.match(script, /History twin probe, run \$\{\{ github\.run_id \}\}/);
+  // the Drive step keeps the probe's JSON files (not the days it filled in) under probe/, copy only, and the build job's other steps are the ones they were
+  const keep = stepScript(y, 'Keep the simulated twin on Drive'); assert.match(keep, /if ls data\/twin\/probe\/probe-\*\.json > \/dev\/null 2>&1; then mkdir -p "\$S\/probe"; for f in data\/twin\/probe\/probe-\*\.json; do ln -s "\$GITHUB_WORKSPACE\/\$f" "\$S\/probe\/\$\(basename "\$f"\)"; done; fi/);
+  assert.ok(!/data\/twin\/probe\/depth/.test(keep), 'the filled-in days are not kept');
+  assert.ok(y.slice(0, y.indexOf('\non:')).includes('13. THE ENTRY-STATE PROBE (round R3b;'), 'the header says what it is');
+  assert.equal(names.filter((n) => n.startsWith('Fast rows')).length, 1);
+});
+
+test('R3b: the split step refuses probe on confirm, with the backtest legs or the lag arms, off the fast route, without model_drive, and a probe day that is a confirm day, not a day of the split or not a day at all; it accepts the judged and the fit days', () => {
+  const ok = (env: Record<string, string>) => { const r = splitStep({ FAST: 'true', MODEL_DRIVE: 'm1', PROBE: 'true', ...env }); assert.equal(r.ok, true, `${JSON.stringify(env)}: ${r.text}`); return r; };
+  const no = (env: Record<string, string>, re: RegExp) => { const r = splitStep({ FAST: 'true', MODEL_DRIVE: 'm1', PROBE: 'true', ...env }); assert.equal(r.ok, false, `${JSON.stringify(env)} must be refused`); assert.match(r.text, re); };
+  const base = ok({}); assert.match(base.text, /^\[twin\] probe requested: the entry-state probe \(report only\) runs after the fast rows on 4 day\(s\)$/m, 'the judged days of the dev split'); assert.equal(base.out.fast, 'true');
+  assert.equal(ok({ PROBE_DAYS: '2026-11-13' }).text.match(/probe requested: .* on (\d+) day/)![1], '1');
+  assert.match(ok({ PROBE_DAYS: ` ${SPLITS.dev.fit[0]} , ${SPLITS.dev.judge[0]} ` }).text, /on 2 day\(s\)/, 'a fit day and a judged day, spaces allowed');
+  no({ SPLIT: 'confirm', NOTE: 'n', FAST: 'false' }, /probe=true is for split dev or custom only/); no({ SPLIT: 'confirm', NOTE: 'n' }, /fast=true is for split dev or custom only|probe=true is for split dev or custom only/);
+  no({ BACKTESTS: 'true' }, /fast=true cannot run the backtest legs|probe=true cannot run with the backtest legs/); no({ LAG_ARMS: 'true' }, /fast=true does not build the lag arms|probe=true does not run with the lag arms/);
+  no({ FAST: 'false' }, /probe=true is for fast=true runs only/); no({ MODEL_DRIVE: '' }, /probe=true needs model_drive/);
+  no({ PROBE_DAYS: CONFIRM_DAYS[0] }, /probe_days: 2026-11-18 is a confirm day \(2026-11-18,2026-11-19,2026-11-20\): the probe never reads a confirm day/); no({ PROBE_DAYS: `${SPLITS.dev.judge[0]},${CONFIRM_DAYS[2]}` }, /probe_days: 2026-11-20 is a confirm day/);
+  no({ PROBE_DAYS: '2026-11-30' }, /probe_days: 2026-11-30 is neither a fit day nor a judged day of this split/); no({ PROBE_DAYS: '2026-11-10' }, /neither a fit day nor a judged day/);
+  no({ PROBE_DAYS: 'soon' }, /probe_days: 'soon' is not a YYYY-MM-DD day/); no({ PROBE_DAYS: '2026-02-30' }, /'2026-02-30' is not a YYYY-MM-DD day/);
+  // a custom split's own days are the ones allowed
+  const cust = { SPLIT: 'custom', FIT_IN: '2026-11-11,2026-11-12', JUDGE_IN: '2026-11-13,2026-11-14' };
+  ok({ ...cust, PROBE_DAYS: '2026-11-12,2026-11-14' }); no({ ...cust, PROBE_DAYS: '2026-11-16' }, /neither a fit day nor a judged day/);
+  // probe off: nothing new is printed, days given are ignored with a warning, and the outputs are the ones of a run without the input
+  const off = splitStep({ FAST: 'true', MODEL_DRIVE: 'm1', PROBE: 'false', PROBE_DAYS: CONFIRM_DAYS[0] }); assert.equal(off.ok, true, off.text); assert.ok(!/probe requested/.test(off.text)); assert.match(off.text, /probe_days is ignored unless probe=true/);
+  const none = splitStep({ FAST: 'true', MODEL_DRIVE: 'm1' }); assert.equal(none.ok, true); assert.ok(!/probe/.test(none.text)); assert.deepEqual(none.out, off.out, 'the split step\'s outputs do not depend on the probe');
+  assert.equal(splitStep({ FAST: 'false', PROBE: 'false' }).ok, true, 'probe=false on the full route is the usual run');
+});
+
+/** The probe step as the job runs it, over a synthetic workspace: the real days, the requote days (the build's data/replay-src), the depth model, the split on record, the
+ *  decision model on a stub Drive; the real stages (fill, probe, probe-report) run on them; gh is a stub that keeps the comment. */
+async function probeStepRun(o: { judge?: string; probeDays?: string; modelDrive?: string; modelOnDrive?: boolean; requote?: 'src' | 'fit' | 'none'; node?: 'real' | 'broken'; ghFails?: boolean; paramsRun?: string; extraDays?: string[]; dieDays?: string[]; dieCode?: number; dieSilent?: boolean; hangDays?: string[]; slots?: number; failStage?: string; fillFails?: boolean; depthModelRun?: string; dropWarm?: boolean; mutate?: (script: string) => string } = {}) {
+  const w = await probeWorld(), ws = stageWs(), driveRoot = tmpDir(), sent = path.join(ws.tmp, 'sent.md'), calls = path.join(ws.tmp, 'calls.txt');
+  fs.symlinkSync(path.join(ROOT, 'params'), path.join(ws.ws, 'params'));
+  const put = (from: string, to: string) => { fs.mkdirSync(to, { recursive: true }); for (const f of fs.readdirSync(from)) fs.copyFileSync(path.join(from, f), path.join(to, f)); };
+  put(w.real, path.join(ws.ws, 'data/twin-real15m'));
+  const rq = o.requote ?? 'src'; if (rq !== 'none') put(w.req, path.join(ws.ws, rq === 'src' ? 'data/replay-src' : 'data/replay-fit'));
+  // only the day before the probe day is missing (a warm-up day: always so for a judged day whose day before is a FIT day, with depth_model_run)
+  if (o.dropWarm && rq !== 'none') fs.rmSync(path.join(ws.ws, rq === 'src' ? 'data/replay-src' : 'data/replay-fit', `md-${PROBE_WARM}.jsonl.gz`));
+  fs.mkdirSync(path.join(ws.ws, 'data/models'), { recursive: true }); fs.copyFileSync(w.depthModel, path.join(ws.ws, 'data/models/depth_model.json'));
+  fs.writeFileSync(path.join(ws.ws, 'data/twin/split.json'), JSON.stringify({ name: 'dev', fit: [...SPLITS.dev.fit], judge: [...SPLITS.dev.judge], warm: [] }));
+  if (o.modelOnDrive !== false) { fs.mkdirSync(path.join(driveRoot, 'models/m1'), { recursive: true }); fs.copyFileSync(w.modelFile, path.join(driveRoot, 'models/m1/model.json')); }
+  if (o.ghFails) fs.writeFileSync(path.join(ws.bin, 'gh'), '#!/usr/bin/env bash\nexit 1\n', { mode: 0o755 });
+  // more days than the world's two (a real day and a requote day each, made the way the world makes them)
+  for (const [i, d] of (o.extraDays ?? []).entries()) {
+    const lib = readDepthModel(w.depthModel)!, raw = path.join(tmpDir(), `raw-${d}.jsonl.gz`), seed = 60 + i;
+    writeEventsGz(raw, synthRequoteDay({ day: d, assets: ['BTC', 'ETH', 'SOL', 'HYPE'], windows: 6, seed, startHour: 0 }));
+    await fillDayFile(raw, path.join(ws.ws, 'data/twin-real15m', `md-${d}.jsonl.gz`), { how: 'depth' }, lib);
+    writeEventsGz(path.join(ws.ws, 'data/replay-src', `md-${d}.jsonl.gz`), synthRequoteDay({ day: d, assets: ['BTC', 'ETH'], windows: 6, seed: seed - 37, startHour: 0 }));
+  }
+  if (o.node === 'broken') fs.writeFileSync(path.join(ws.bin, 'node'), '#!/usr/bin/env bash\necho "boom" >&2\nexit 1\n', { mode: 0o755 });
+  // a node that fails the fill-in with a noisy log (days and tickers in it), or that fails the day process of the days named (the real node does the rest)
+  else if (o.dieDays || o.fillFails || o.hangDays || o.failStage) fs.writeFileSync(path.join(ws.bin, 'node'), `#!/usr/bin/env bash
+if [ -n "\${STUB_FILL_FAILS:-}" ] && [[ "$*" == *"--stage fill "* ]]; then for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo "line $i of the fill-in's error: contract KXBTC15M-26NOV13H1200-T$i on 2026-11-13T12:00:0$((i % 10))Z"; done; exit 1; fi
+if [ -n "\${STUB_FAIL_STAGE:-}" ] && [[ "$*" == *"--stage $STUB_FAIL_STAGE "* ]]; then echo "[twin] ERROR: stub failure of stage $STUB_FAIL_STAGE" >&2; exit 9; fi
+if [[ "$*" == *"--stage probe --dirs"* ]]; then
+  for d in \${STUB_DIE_DAYS//,/ }; do if [[ "$*" == *"--days $d "* ]]; then [ -n "\${STUB_DIE_SILENT:-}" ] || { echo "[twin] ERROR: boom on $d: KXBTC15M-26NOV13H1200-T1 at 2026-11-13T12:00:00Z" >&2; echo "Error: boom on $d: KXBTC15M-26NOV13H1200-T1 at 2026-11-13T12:00:00Z" >&2; for i in 1 2 3 4 5 6 7; do echo "    at frame$i (/app/research/historyTwin.ts:$i:2)" >&2; done; }; exit "\${STUB_DIE_CODE:-7}"; fi; done
+  for d in \${STUB_HANG_DAYS//,/ }; do if [[ "$*" == *"--days $d "* ]]; then exec sleep 120; fi; done
+fi
+exec "$REAL_NODE" "$@"
+`, { mode: 0o755 });
+  // a short limit for the day passes (the step's own is 900 s) and a number of process slots: a hung day is cut in seconds, the days behind it in a later wave never start
+  if (o.hangDays) fs.writeFileSync(path.join(ws.bin, 'timeout'), `#!/usr/bin/env bash
+if [[ "$*" == *"xargs -P"* ]]; then exec "$REAL_TIMEOUT" --kill-after=2 6 "\${@:3}"; fi
+exec "$REAL_TIMEOUT" "$@"
+`, { mode: 0o755 });
+  if (o.slots) fs.writeFileSync(path.join(ws.bin, 'nproc'), `#!/usr/bin/env bash\necho ${o.slots}\n`, { mode: 0o755 });
+  const y = wf(), env = { PATH: `${ws.bin}:${process.env.PATH}`, RUNNER_TEMP: ws.tmp, GH_TOKEN: 't', GH_OUT: sent, STUB_DRIVE: driveRoot, STUB_CALLS: calls, JUDGE: o.judge ?? PROBE_DAY, PROBE_DAYS: o.probeDays ?? '', MODEL_DRIVE: o.modelDrive ?? 'm1', DEPTH_PARAMS_RUN: o.paramsRun ?? '', PROBE_HEAP_MB: '3072', STUB_DIE_DAYS: (o.dieDays ?? []).join(','), STUB_FILL_FAILS: o.fillFails ? '1' : '', STUB_FAIL_STAGE: o.failStage ?? '', STUB_DIE_CODE: String(o.dieCode ?? 7), STUB_DIE_SILENT: o.dieSilent ? '1' : '', STUB_HANG_DAYS: (o.hangDays ?? []).join(','), REAL_NODE: process.execPath, REAL_TIMEOUT: spawnSync('bash', ['-c', 'command -v timeout'], { encoding: 'utf8' }).stdout.trim() };
+  // run as GitHub runs a step with no `shell:` (bash -e FILE): every failure path of the step must still end 0 with its WARNING
+  const r = ghStep((o.mutate ?? ((x: string) => x))(exprText(stepScript(y, PROBE_STEP))), env, ws.ws);
+  const log = fs.existsSync(path.join(ws.tmp, 'build.log')) ? fs.readFileSync(path.join(ws.tmp, 'build.log'), 'utf8') : '';
+  return { r, log, sent: fs.existsSync(sent) ? fs.readFileSync(sent, 'utf8') : '', ws, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '', probeDir: path.join(ws.ws, 'data/twin/probe') };
+}
+
+test('R3b: the probe step run on a synthetic workspace: the three folders are built, the stage runs per day, the lines reach build.log and a comment of their own (public-safe), and the files are kept; a requote day from the build\'s other folder works too', async () => {
+  const x = await probeStepRun();
+  assert.equal(x.r.status, 0, `${x.r.stdout}${x.r.stderr}`);
+  const lines = x.r.stdout.split('\n').filter(Boolean); publicSafe(lines, 'the step\'s output');
+  assert.ok(lines.every((l) => /^\[twin\] probe/.test(l)) && lines.length > 60, `${lines.length} probe lines`);
+  // the job log: the status lines first (the fill-in's day count, then the units by position: the diagnostics the RUNBOOK sends the reader to), then the whole report, which probe-report prints again from the files
+  const rep = okCli('--stage', 'probe-report', '--dir', x.probeDir).split('\n').filter(Boolean), status = lines.slice(0, lines.length - rep.length);
+  assert.deepEqual(lines.slice(-rep.length), rep);
+  assert.equal(status.length, 4); assert.equal(status[0], '[twin] probe depth side: 2 requote day(s) filled in with the depth model and parameters the fast rows used');
+  assert.match(status[1], /^\[twin\] probe unit real day 1: \d+ rows kept, \d+(\.\d+)? s$/); assert.match(status[2], /^\[twin\] probe unit requote day 1: \d+ rows kept, \d+(\.\d+)? s$/); assert.match(status[3], /^\[twin\] probe unit depth day 1: \d+ rows kept, \d+(\.\d+)? s$/);
+  // build.log (what the build comment's last 60 lines are made of): the status lines and the BOUNDED report lines (header, summary), never the whole report
+  const log = x.log.split('\n').filter(Boolean), brief = rep.filter((l) => /^\[twin\] probe( summary| report)?: /.test(l));
+  assert.deepEqual(log, [...status, ...brief]); assert.equal(brief.length, 2, 'the header and the closing summary'); assert.ok(log.length <= 8);
+  assert.ok(!log.some((l) => /^\[twin\] probe (real|requote|depth)( vs real)?( day \d+)? (BTC|ETH|SOL|XRP|all)/.test(l)), 'no per-asset line in build.log');
+  // the comment of its own: the title, the whole report in a code block, posted once
+  assert.ok(x.sent.startsWith('History twin probe, run 77\n\n```\n[twin] probe: 1 day(s) (day 1 to 1 in date order), sources real requote depth')); assert.ok(x.sent.trimEnd().endsWith('```')); assert.equal(x.sent.split('\n').filter((l) => l.startsWith('[twin]')).join('\n'), rep.join('\n'));
+  // the three kinds of Drive read, copy only: the model; nothing else (the requote days were in the build's folder); the model's own vol model is not there, so none is passed on
+  assert.equal(x.calls.trim(), 'get models/m1 data/probe-model --include model.json --include vol_model.json');
+  // the files: one per source, the filled days beside them (the Keep step keeps the JSON only)
+  assert.deepEqual(fs.readdirSync(x.probeDir).sort(), ['depth', 'probe-days.json', `probe-depth-${PROBE_DAY}.json`, `probe-real-${PROBE_DAY}.json`, `probe-requote-${PROBE_DAY}.json`].sort());
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(x.probeDir, 'probe-days.json'), 'utf8')), { v: 1, days: [PROBE_DAY] }, 'the days asked for, so a re-read keeps their numbers');
+  assert.deepEqual(fs.readdirSync(path.join(x.probeDir, 'depth')).sort(), [`md-${PROBE_WARM}.jsonl.gz`, `md-${PROBE_DAY}.jsonl.gz`], 'the probe day and the day before it');
+  // the files are the ones the stage writes: probe-report over them prints what the step printed (asserted above, the report is the job log's last lines)
+  // the requote days of the build's FIT folder are found too, the judged days are the default, and a day list given picks the days
+  const fit = await probeStepRun({ requote: 'fit', probeDays: ` ${PROBE_DAY} ` }); assert.equal(fit.r.status, 0, `${fit.r.stdout}${fit.r.stderr}`); assert.match(fit.log, /^\[twin\] probe: 1 day\(s\)/m); assert.equal(fit.calls.trim(), x.calls.trim());
+  // no requote day anywhere: Drive is asked once (copy only), nothing is made up, the step says so in one line, writes no comment and still ends 0
+  const none = await probeStepRun({ requote: 'none' }); assert.equal(none.r.status, 0, `${none.r.stdout}${none.r.stderr}`);
+  assert.match(none.calls, /^get simulated\/kalshi-replay-200d data\/probe-requote-drive --include replay-manifest\.json --include md-2026-11-12\.jsonl\.gz --include md-2026-11-13\.jsonl\.gz$/m);
+  assert.match(none.log, /^\[twin\] probe: 2 requote day\(s\) \(a probe day or the day before one\) are not on Drive at this replay version; a probe never regenerates a day, so they are left out$/m);
+  assert.match(none.log, /^\[twin\] WARNING: the entry-state probe did not finish \(exit 1\); the build is not affected \(report only\)\./m); assert.equal(none.sent, '', 'no comment');
+  // and the remedy is named where the days are left out: a FIT day's requote day is kept only by a run that fitted the model here, or at the manifest's version
+  assert.match(none.log, /^\[twin\] probe: a FIT day's requote day is in the build only when the run fitted the depth model here: omit depth_model_run to keep the FIT requote days, or use a run whose Drive replay manifest version equals REPLAY_VERSION \(RUNBOOK 3\.2\.1\)$/m);
+});
+
+test('R3b: the probe step can never fail the job: no model on Drive, a model_drive that is not a folder name, a node that crashes, a comment that cannot be posted: each ends 0, says why in one WARNING line and posts nothing it cannot back', async () => {
+  const warn = /^\[twin\] WARNING: the entry-state probe did not finish \(exit 1\); the build is not affected \(report only\)\. Last lines: /m;
+  const nomodel = await probeStepRun({ modelOnDrive: false }); assert.equal(nomodel.r.status, 0, nomodel.r.stderr); assert.match(nomodel.log, warn); assert.match(nomodel.log, /models\/m1 is not on Drive/); assert.equal(nomodel.sent, ''); assert.ok(!fs.existsSync(nomodel.probeDir) || !fs.readdirSync(nomodel.probeDir).some((f) => /^probe-/.test(f)));
+  const badname = await probeStepRun({ modelDrive: '../x y' }); assert.equal(badname.r.status, 0, badname.r.stderr); assert.match(badname.log, /model_drive must be a folder name under models/); assert.equal(badname.calls, '', 'a bad folder name reaches no Drive path');
+  const broken = await probeStepRun({ node: 'broken' }); assert.equal(broken.r.status, 0, broken.r.stderr); assert.match(broken.log, warn); assert.match(broken.log, /the depth fill-in of the probe's days failed/); assert.equal(broken.sent, '');
+  const nogh = await probeStepRun({ ghFails: true }); assert.equal(nogh.r.status, 0, nogh.r.stderr); assert.match(nogh.r.stdout, /^could not post the comment$/m); assert.match(nogh.log, /^\[twin\] probe: 1 day\(s\) \(day 1 to 1 in date order\)/m, 'the bounded lines are in build.log all the same'); assert.match(nogh.log, /^\[twin\] probe summary: /m); assert.match(nogh.r.stdout, /^\[twin\] probe real BTC: rows \d+/m, 'and the whole report in the step log');
+  // a probe day that is a confirm day never gets this far (the split step refuses it), and the stage refuses it again: nothing is written
+  const conf = await probeStepRun({ probeDays: CONFIRM_DAYS[0] }); assert.equal(conf.r.status, 0, conf.r.stderr); assert.match(conf.log, warn); assert.ok(!fs.existsSync(conf.probeDir) || !fs.readdirSync(conf.probeDir).some((f) => /^probe-/.test(f)), 'no probe file of a confirm day');
+  assert.ok(!/2026-11-18/.test(conf.log + conf.r.stdout), 'and the day is not printed');
+});
+
+test('R3b: the Drive step keeps the probe\'s JSON files under probe/ (copy only) and not the days it filled in; a run with no probe keeps what it kept before', () => {
+  const y = wf(), w = stageWs(), list = path.join(w.tmp, 'list.txt');
+  fs.writeFileSync(path.join(w.ws, 'deploy/drive_lab.sh'), '#!/usr/bin/env bash\ncase "$1" in put) (cd "$3" && find -L . -type f | sort) > "$STUB_LIST"; echo "$RCLONE_COPY_LINKS" >> "$STUB_LIST.env";; esac\n', { mode: 0o755 });
+  const run = () => { const r = bash(exprText(stepScript(y, 'Keep the simulated twin on Drive')), { PATH: `${w.bin}:${process.env.PATH}`, RUNNER_TEMP: w.tmp, GITHUB_WORKSPACE: w.ws, STUB_LIST: list }, w.ws); assert.equal(r.status, 0, `${r.stdout}${r.stderr}`); return fs.readFileSync(list, 'utf8').trim().split('\n'); };
+  assert.deepEqual(run(), ['./days.txt'], 'no probe: the folder it always made');
+  const pd = path.join(w.ws, 'data/twin/probe'); fs.mkdirSync(path.join(pd, 'depth'), { recursive: true });
+  for (const f of ['probe-real-2026-11-13.json', 'probe-requote-2026-11-13.json', 'probe-depth-2026-11-13.json', 'probe-real-2026-11-14.json']) fs.writeFileSync(path.join(pd, f), '{}');
+  fs.writeFileSync(path.join(pd, 'depth/md-2026-11-13.jsonl.gz'), 'x'); fs.writeFileSync(path.join(pd, 'notes.txt'), 'x');
+  assert.deepEqual(run(), ['./days.txt', './probe/probe-depth-2026-11-13.json', './probe/probe-real-2026-11-13.json', './probe/probe-real-2026-11-14.json', './probe/probe-requote-2026-11-13.json']);
+  assert.equal(fs.readFileSync(`${list}.env`, 'utf8').trim().split('\n').pop(), 'true', 'symlinks are followed, copy only');
+});
+
+// ---- R3b fix round 1: the requested days keep their numbers, the step says what became of each day, build.log holds the bounded lines, the limits nest ----
+import { checkProbeDays } from '../research/history/entryProbe';
+
+test('R3b fix: probe-days.json: a requested day with no file keeps its number and is said once; without the request the days that have a file are numbered (the old way); a complete set prints the same either way', () => {
+  const days = ['2026-11-13', '2026-11-14', '2026-11-16'], all = fixDays(days), cut = all.filter((f) => f.day !== days[1]);
+  // WITHOUT the request the third requested date is "day 2": the renumbering the request prevents
+  const plain = probeReportLines(cut);
+  assert.match(plain[0], /^\[twin\] probe: 2 day\(s\) \(day 1 to 2 in date order\)/); assert.ok(plain.some((l) => l.startsWith('[twin] probe depth vs real day 2 ETH:')));
+  // WITH it: three days, the middle one has no file in any source, the third is day 3
+  const kept = probeReportLines(cut, days);
+  publicSafe(kept, 'the report with a missing day');
+  assert.match(kept[0], /^\[twin\] probe: 3 day\(s\) \(day 1 to 3 in date order\), sources real requote depth, .*the report pools the 2 day\(s\) every source has$/);
+  assert.ok(kept.includes('[twin] probe day 2: no probe file in any source (its passes did not finish, or its requote day is missing); the day is left out of every line below and the day numbers stay the requested ones'));
+  assert.ok(!kept.some((l) => /^\[twin\] probe day 2: no file for/.test(l)), 'one line for the day, not one per source');
+  assert.ok(kept.some((l) => l.startsWith('[twin] probe depth vs real day 3 ETH:')) && kept.some((l) => l.startsWith('[twin] probe depth vs real day 1 ETH:')) && !kept.some((l) => / vs real day 2 /.test(l)));
+  assert.ok(kept.some((l) => l.startsWith('[twin] probe real day 3: contracts kept')) && !kept.some((l) => /real day 2: contracts/.test(l)));
+  assert.match(kept.find((l) => l.startsWith('[twin] probe real BTC:'))!, /^\[twin\] probe real BTC: rows 200, /, 'the two days with files are pooled');
+  // a complete set: the request changes nothing
+  assert.deepEqual(probeReportLines(all, days), probeReportLines(all));
+  // one source missing for one day is still said per source; a requested day past the last file is said too
+  assert.ok(probeReportLines(all.filter((f) => !(f.src === 'depth' && f.day === days[1])), days).includes('[twin] probe day 2: no file for depth (the day is left out of the pooled lines)'));
+  assert.ok(probeReportLines(all, [...days, '2026-11-17']).some((l) => /^\[twin\] probe day 4: no probe file in any source/.test(l)));
+});
+
+test('R3b fix: checkProbeDays reads a request of days in date order, once each, and names why it refuses anything else', () => {
+  assert.equal(checkProbeDays({ v: PROBE_VERSION, days: ['2026-11-13', '2026-11-14'] }), undefined);
+  assert.match(checkProbeDays({ v: 9, days: ['2026-11-13'] }) ?? '', /version 9, this code reads version 1/); assert.match(checkProbeDays(null) ?? '', /not an object/);
+  assert.match(checkProbeDays({ v: 1, days: [] }) ?? '', /no days/); assert.match(checkProbeDays({ v: 1 }) ?? '', /no days/); assert.match(checkProbeDays({ v: 1, days: ['2026-11-13', 'soon'] }) ?? '', /a day is not YYYY-MM-DD/);
+  assert.match(checkProbeDays({ v: 1, days: ['2026-11-14', '2026-11-13'] }) ?? '', /not in date order, once each/); assert.match(checkProbeDays({ v: 1, days: ['2026-11-13', '2026-11-13'] }) ?? '', /not in date order, once each/);
+});
+
+test('R3b fix: --stage probe-report reads probe-days.json beside the files (the requested numbering), refuses one that is another version, unreadable or names a confirm day, and a folder without it prints as it did', () => {
+  const days = ['2026-11-13', '2026-11-14', '2026-11-16'], dir = tmpDir(), put = (f: ProbeFile) => fs.writeFileSync(path.join(dir, `probe-${f.src}-${f.day}.json`), JSON.stringify(f));
+  const cut = fixDays(days).filter((f) => f.day !== days[1]); for (const f of cut) put(f);
+  assert.deepEqual(okCli('--stage', 'probe-report', '--dir', dir).split('\n').filter(Boolean), probeReportLines(cut), 'no probe-days.json: the days that have a file');
+  fs.writeFileSync(path.join(dir, 'probe-days.json'), JSON.stringify({ v: 1, days }));
+  const rep = okCli('--stage', 'probe-report', '--dir', dir).split('\n').filter(Boolean);
+  assert.deepEqual(rep, probeReportLines(cut, days)); publicSafe(rep, 'the re-read report'); assert.ok(rep.some((l) => l.startsWith('[twin] probe day 2: no probe file in any source')));
+  // refused by name, never guessed at
+  const bad = (x: string, re: RegExp) => { fs.writeFileSync(path.join(dir, 'probe-days.json'), x); const r = twinCli('--stage', 'probe-report', '--dir', dir); assert.notEqual(r.status, 0); assert.match(r.stderr, re); };
+  bad(JSON.stringify({ v: 9, days }), /^\[twin\] ERROR: probe-days\.json is not a probe days file this code reads: version 9, this code reads version 1/m);
+  bad('{not json', /^\[twin\] ERROR: probe-days\.json is not readable JSON/m);
+  bad(JSON.stringify({ v: 1, days: [...days, CONFIRM_DAYS[0]] }), /^\[twin\] ERROR: the probe never reads a confirm day: .*probe-days\.json names 2026-11-18/m);
+  // the request alone (every process died, so no file): the one line a folder with no file prints, exit 0
+  const alone = tmpDir(); fs.writeFileSync(path.join(alone, 'probe-days.json'), JSON.stringify({ v: 1, days }));
+  assert.deepEqual(okCli('--stage', 'probe-report', '--dir', alone).split('\n').filter(Boolean), ['[twin] probe report: no probe files (a run made before round R3b has none)']);
+});
+
+test('R3b fix: a probe day whose process dies is said by its position (never its date), the units and the scrubbed tail of its log reach the job log, the report keeps the requested day numbers, and build.log holds the bounded lines', async () => {
+  const days = ['2026-11-12', '2026-11-13', '2026-11-14'], x = await probeStepRun({ probeDays: days.join(','), extraDays: ['2026-11-14'], dieDays: ['2026-11-13'] });
+  assert.equal(x.r.status, 0, `${x.r.stdout}${x.r.stderr}`);
+  const lines = x.r.stdout.split('\n').filter(Boolean); publicSafe(lines, 'the step output'); publicSafe(x.log.split('\n').filter(Boolean), 'build.log');
+  // the day that died: by position, with the scrubbed tail of its own log (the days and the ticker it carried are gone)
+  assert.ok(lines.includes('[twin] probe day 2 of 3: process exited 7'));
+  const at = lines.indexOf('[twin] probe day 2 of 3: last lines of its log, report lines left out (days and tickers scrubbed)'); assert.ok(at > 0);
+  assert.equal(lines[at + 1], '[twin] ERROR: boom on <day>: <ticker> at <day>');
+  // the real failure shape (historyTwinMain prints the one-line message, then 'Error: msg', then stack frames): the message comes first and no stack frame reaches the job log or the warning
+  assert.equal(lines[at + 2], 'Error: boom on <day>: <ticker> at <day>');
+  assert.ok(!lines.some((l) => /^\s+at \S+ \(/.test(l)), 'no stack frame in the step output'); assert.ok(!x.log.split('\n').some((l) => /^\s+at \S+ \(/.test(l)), 'no stack frame in build.log');
+  // the units of the days that finished carry their position; the day that died has none
+  for (const k of [1, 3]) for (const src of ['real', 'requote', 'depth']) assert.ok(lines.some((l) => new RegExp(`^\\[twin\\] probe unit ${src} day ${k}: \\d+ rows kept, \\d+(\\.\\d+)? s$`).test(l)), `${src} day ${k}`);
+  assert.ok(!lines.some((l) => /^\[twin\] probe unit \w+ day 2:/.test(l)));
+  // the warning names the day that has no file by position, and says the report keeps the requested numbers
+  const warn = lines.find((l) => l.startsWith('[twin] WARNING: the entry-state probe wrote files'))!;
+  assert.equal(warn, '[twin] WARNING: the entry-state probe wrote files for 2 of 3 requested day(s); requested day(s) 2 (date order) have none and are left out of every line of the report, which keeps the requested day numbers (day 1 = the earliest requested day)');
+  // the report: three requested days, day 2 said once, day 3 still day 3
+  const rep = okCli('--stage', 'probe-report', '--dir', x.probeDir).split('\n').filter(Boolean); assert.deepEqual(lines.slice(-rep.length), rep);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(x.probeDir, 'probe-days.json'), 'utf8')), { v: 1, days });
+  assert.match(rep[0], /^\[twin\] probe: 3 day\(s\) \(day 1 to 3 in date order\), sources real requote depth/); assert.ok(rep.some((l) => l.startsWith('[twin] probe day 2: no probe file in any source')));
+  assert.ok(rep.some((l) => l.startsWith('[twin] probe depth vs real day 3 BTC:')) && !rep.some((l) => / vs real day 2 /.test(l)));
+  // build.log: the status lines, the exit line, the warning and the report's header and summary: bounded, no per-asset line
+  const log = x.log.split('\n').filter(Boolean);
+  for (const l of ['[twin] probe day 2 of 3: process exited 7', warn, rep[0]]) assert.ok(log.includes(l), l);
+  assert.ok(log.length <= 16, `${log.length} lines in build.log`); assert.ok(!log.some((l) => /^\[twin\] probe (real|requote|depth)( vs real)?( day \d+)? (BTC|ETH|SOL|XRP|all)/.test(l)));
+  assert.ok(!log.some((l) => /last lines of its log|ERROR: boom/.test(l)), 'the log tail is for the job log, not the build comment');
+  assert.equal(x.sent.split('\n').filter((l) => l.startsWith('[twin]')).join('\n'), rep.join('\n'), 'the comment of its own holds the whole report');
+  // the same probe re-read from the files alone prints the same, with the same numbers
+  assert.deepEqual(okCli('--stage', 'probe-report', '--dir', x.probeDir).split('\n').filter(Boolean), rep);
+});
+
+test('R3b fix: every day process dying ends in the WARNING with the cause first and no probe file (the FIT-day advice only when a requested day has no requote day); a failed fill-in prints the tail of its log beyond the three lines, scrubbed', async () => {
+  const dead = await probeStepRun({ dieDays: [PROBE_DAY] }); assert.equal(dead.r.status, 0, dead.r.stderr);
+  const dl = dead.r.stdout.split('\n').filter(Boolean); publicSafe(dl, 'the step output'); assert.ok(dl.includes('[twin] probe day 1 of 1: process exited 7'));
+  // (R3b fix 2: the requested day here HAS its requote day, so there is no advice about FIT days; the cause, the exit code of the day and the error, comes first)
+  assert.match(dead.log, /^\[twin\] WARNING: the entry-state probe did not finish \(exit 1\); the build is not affected \(report only\)\. Last lines: day\(s\) 1 exited 7; no probe file was written; last lines: \[twin\] ERROR: boom on <day>: <ticker> at <day>\|/m); assert.equal(dead.sent, '', 'no comment');
+  assert.ok(!/omit depth_model_run/.test(dead.log + dead.r.stdout), 'no advice about FIT days when the requested day has its requote day');
+  assert.ok(dl.some((l) => l.startsWith("::group::the probe step's own log, the last 60 lines")) && dl.includes('::endgroup::'), 'what the step wrote to its own log file is printed when the probe did not finish');
+  assert.ok(dead.log.split('\n').filter((l) => /^\[twin\] WARNING: the entry-state probe did not finish/.test(l)).every((l) => l.length <= 300), 'the line is the one the build comment shows');
+  assert.ok(!fs.existsSync(dead.probeDir) || !fs.readdirSync(dead.probeDir).some((f) => /^probe-/.test(f)), 'no probe file and no probe-days.json when nothing was written');
+  const noisy = await probeStepRun({ fillFails: true }); assert.equal(noisy.r.status, 0, noisy.r.stderr);
+  const nl = noisy.r.stdout.split('\n'), g = nl.findIndex((l) => l.startsWith("::group::the depth fill-in of the probe's days failed")), e = nl.indexOf('::endgroup::');
+  assert.ok(g >= 0 && e - g - 1 >= 10, `the group holds the tail of the log (${e - g - 1} lines), not 3`); assert.ok(nl.slice(g + 1, e).every((l) => /^line \d+ of the fill-in's error: contract <ticker> on <day>/.test(l)), 'scrubbed');
+  assert.ok(!/2026-11|KXBTC/.test(noisy.r.stdout + noisy.log), 'no date and no ticker in the job log or build.log');
+  assert.match(noisy.log, /^\[twin\] WARNING: the entry-state probe did not finish \(exit 1\)/m);
+});
+
+test('R3b fix: more days than process slots run in waves and say so; days past the files are named by position; the days asked for are kept', async () => {
+  const days = ['2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15', '2026-11-16'], x = await probeStepRun({ probeDays: days.join(',') });
+  assert.equal(x.r.status, 0, `${x.r.stdout}${x.r.stderr}`);
+  const lines = x.r.stdout.split('\n').filter(Boolean); publicSafe(lines, 'the step output');
+  assert.ok(lines.some((l) => /^\[twin\] probe: 5 day\(s\) on [1-4] process slot\(s\) run in waves; the day passes' 15-minute limit may cut the later ones \(RUNBOOK 3\.2\.1: at most [1-4] probe days per dispatch\)$/.test(l)));
+  assert.ok(lines.some((l) => /^\[twin\] probe: \d+ requote day\(s\) .* left out$/.test(l)) && lines.some((l) => l.startsWith("[twin] probe: a FIT day's requote day is in the build only when")));
+  assert.ok(lines.some((l) => l.startsWith('[twin] WARNING: the entry-state probe wrote files for 2 of 5 requested day(s); requested day(s) 3,4,5 (date order) have none')));
+  assert.ok(lines.includes("[twin] probe day 3 of 5: its log holds only the stage's own report lines (the unit lines above say why it wrote no file)"));
+  assert.ok(lines.some((l) => /^\[twin\] probe unit real day 3: no day file for one of the probe days; left out$/.test(l)));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(x.probeDir, 'probe-days.json'), 'utf8')), { v: 1, days });
+  assert.match(lines.find((l) => /^\[twin\] probe: 5 day\(s\) \(day 1 to 5 in date order\)/.test(l))!, /the report pools the 2 day\(s\) every source has$/);
+});
+
+test('R3b fix: the split step warns when a FIT probe day meets depth_model_run (its requote day is then read from Drive only at the replay version), and says nothing for judged days, without the reuse, or with the probe off', () => {
+  const env = { FAST: 'true', MODEL_DRIVE: 'm1', PROBE: 'true' }, fitDay = SPLITS.dev.fit[0], judgedDay = SPLITS.dev.judge[0];
+  const w = splitStep({ ...env, DEPTH_MODEL_RUN: '12345', PROBE_DAYS: `${judgedDay},${fitDay},${SPLITS.dev.fit[1]}` });
+  assert.equal(w.ok, true, w.text); assert.equal(w.text.split('\n').filter((l) => l.startsWith('::warning::probe_days has a FIT day and depth_model_run is set')).length, 1, 'once, not per day');
+  assert.match(w.text, /Omit depth_model_run to fit here and keep the FIT requote days \(RUNBOOK 3\.2\.1\)/);
+  for (const e of [{ DEPTH_MODEL_RUN: '12345', PROBE_DAYS: judgedDay }, { DEPTH_MODEL_RUN: '12345' }, { PROBE_DAYS: fitDay }, { DEPTH_MODEL_RUN: '12345', PROBE: 'false', PROBE_DAYS: fitDay }] as Array<Record<string, string>>) { const r = splitStep({ ...env, ...e }); assert.equal(r.ok, true, r.text); assert.ok(!/depth_model_run is set/.test(r.text), JSON.stringify(e)); }
+});
+
+test('R3b fix: the Drive step keeps probe-days.json with the probe files (a re-read keeps the requested numbers) and still not the filled days', () => {
+  const y = wf(), w = stageWs(), list = path.join(w.tmp, 'list.txt');
+  fs.writeFileSync(path.join(w.ws, 'deploy/drive_lab.sh'), '#!/usr/bin/env bash\ncase "$1" in put) (cd "$3" && find -L . -type f | sort) > "$STUB_LIST";; esac\n', { mode: 0o755 });
+  const pd = path.join(w.ws, 'data/twin/probe'); fs.mkdirSync(path.join(pd, 'depth'), { recursive: true });
+  for (const f of ['probe-days.json', 'probe-real-2026-11-13.json', 'probe-requote-2026-11-13.json']) fs.writeFileSync(path.join(pd, f), '{}');
+  fs.writeFileSync(path.join(pd, 'depth/md-2026-11-13.jsonl.gz'), 'x');
+  const r = bash(exprText(stepScript(y, 'Keep the simulated twin on Drive')), { PATH: `${w.bin}:${process.env.PATH}`, RUNNER_TEMP: w.tmp, GITHUB_WORKSPACE: w.ws, STUB_LIST: list }, w.ws); assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+  assert.deepEqual(fs.readFileSync(list, 'utf8').trim().split('\n'), ['./days.txt', './probe/probe-days.json', './probe/probe-real-2026-11-13.json', './probe/probe-requote-2026-11-13.json']);
+});
+
+// ---- R3b fix round 2: the failure paths of the probe step are reachable under GitHub's bash -e, a day that was running is not said never to have started, the FIT-day advice is for a requested day ----
+
+test('R3b fix 2: the probe step runs as GitHub runs it (bash -e FILE) and every failure path still reaches the WARNING and the exit 0; without `set +e` it would not (the harness is sensitive); -e is live inside the working subshell', async () => {
+  // the finding's reproduction: the same step with its `set +e` taken out ends at the failing subshell, red, with no WARNING and nothing in build.log
+  const old = await probeStepRun({ modelOnDrive: false, mutate: (s) => s.replace(/^set \+e\n/m, '') });
+  assert.notEqual(old.r.status, 0, 'a step with -e on ends with the failing subshell\'s status'); assert.ok(!/did not finish/.test(old.log + old.r.stdout), 'and says nothing');
+  const fixed = await probeStepRun({ modelOnDrive: false }); assert.equal(fixed.r.status, 0, fixed.r.stderr);
+  assert.match(fixed.log, /^\[twin\] WARNING: the entry-state probe did not finish \(exit 1\); the build is not affected \(report only\)\. Last lines: .*models\/m1 is not on Drive/m);
+  assert.ok(fixed.r.stdout.split('\n').some((l) => l.startsWith("::group::the probe step's own log, the last 60 lines")), 'the step log is printed in a group of the job log');
+  // -e is live INSIDE the subshell: the first unguarded failure (the twin-source stage here) ends the work, with that command's own status, and nothing after it runs
+  const inner = await probeStepRun({ requote: 'none', failStage: 'twin-source' }); assert.equal(inner.r.status, 0, inner.r.stderr);
+  assert.match(inner.log, /^\[twin\] WARNING: the entry-state probe did not finish \(exit 9\); /m); assert.ok(!/probe depth side/.test(inner.log + inner.r.stdout), 'the fill-in never ran'); assert.ok(!fs.existsSync(path.join(inner.probeDir, 'depth')));
+  // the report stage failing, a comment that cannot be posted, a node that is gone: all end 0 with the WARNING or the notice
+  const rep = await probeStepRun({ failStage: 'probe-report' }); assert.equal(rep.r.status, 0, rep.r.stderr); assert.match(rep.log, /^\[twin\] WARNING: the entry-state probe did not finish \(exit 1\); .*the probe report failed: /m); assert.equal(rep.sent, '');
+  const noGh = await probeStepRun({ ghFails: true }); assert.equal(noGh.r.status, 0); assert.match(noGh.r.stdout, /^could not post the comment$/m);
+});
+
+test('R3b fix 2: a day that was running when the limit cut it is not said never to have started; a day behind it that did not start is said so; the WARNING carries the cause by position', async () => {
+  const days = ['2026-11-12', '2026-11-13', '2026-11-14'];
+  // one process slot, the first day hangs, the day passes' limit (6 s here, 900 s in the workflow) cuts it, the two days behind it never start
+  const x = await probeStepRun({ probeDays: days.join(','), extraDays: ['2026-11-14'], hangDays: [days[0]], slots: 1 });
+  assert.equal(x.r.status, 0, `${x.r.stdout}${x.r.stderr}`);
+  const lines = x.r.stdout.split('\n').filter(Boolean); publicSafe(lines, 'the step output'); publicSafe(x.log.split('\n').filter(Boolean), 'build.log');
+  assert.ok(lines.some((l) => l.startsWith("[twin] WARNING: the entry-state probe's day passes hit their 15-minute limit and were stopped")), 'the limit was reached');
+  const cut = lines.find((l) => l.startsWith('[twin] probe day 1 of 3: '))!;
+  assert.match(cut, /^\[twin\] probe day 1 of 3: its process was running when the limit cut it, or was killed, before its first source finished \(it prints nothing until then\); the unit seconds of the other days show how long one real pass takes: dispatch 1 or 2 days \(probe_days=A,B\) \(RUNBOOK 3\.2\.1\)$/);
+  for (const k of [2, 3]) assert.ok(lines.includes(`[twin] probe day ${k} of 3: its process never started (a later wave: the day passes' limit was reached first); dispatch it on its own (RUNBOOK 3.2.1)`), `day ${k} never started`);
+  assert.ok(!lines.some((l) => /^\[twin\] probe day 1 of 3: .*never started/.test(l)), 'the day that was running is not said never to have started');
+  assert.ok(fs.existsSync(path.join(x.ws.tmp, 'probe-day-1.started')) && !fs.existsSync(path.join(x.ws.tmp, 'probe-day-2.started')) && !fs.existsSync(path.join(x.ws.tmp, 'probe-day-3.started')), 'the marker is written before node starts: the first day has one, the days that never started have none');
+  // no file at all: the WARNING names the days by cause before anything else (the line is cut at 299 characters)
+  const warn = lines.find((l) => l.startsWith('[twin] WARNING: the entry-state probe did not finish'))!;
+  assert.match(warn, /Last lines: day\(s\) 1 cut or killed; day\(s\) 2,3 never started; no probe file was written; last lines: /); assert.ok(warn.length <= 299);
+  assert.ok(x.log.split('\n').includes(warn), 'the build comment shows the same line');
+  // the process slot count it ran on is said (the waves line), and the report is not made (no file)
+  assert.ok(lines.some((l) => /^\[twin\] probe: 3 day\(s\) on 1 process slot\(s\) run in waves;/.test(l))); assert.equal(x.sent, '');
+});
+
+test('R3b fix 2: a day killed from outside (137) or out of heap (134) names its remedy, with no log it is not said never to have started, and a partial run says why a day has no file in one line of build.log', async () => {
+  const days = ['2026-11-12', '2026-11-13', '2026-11-14'];
+  const kill = await probeStepRun({ probeDays: days.join(','), extraDays: ['2026-11-14'], dieDays: [days[1]], dieCode: 137, dieSilent: true }); assert.equal(kill.r.status, 0, `${kill.r.stdout}${kill.r.stderr}`);
+  const kl = kill.r.stdout.split('\n').filter(Boolean); publicSafe(kl, 'the step output');
+  assert.ok(kl.includes('[twin] probe day 2 of 3: process exited 137'));
+  assert.ok(kl.includes('[twin] probe day 2 of 3: it was killed from outside, most likely out of memory (the killer leaves no log): probe fewer days at once (RUNBOOK 3.2.1)'));
+  assert.ok(!kl.some((l) => /^\[twin\] probe day 2 of 3: .*never started/.test(l)) && !kl.some((l) => /last lines of its log/.test(l)), 'no log, so no tail and no "never started"');
+  assert.ok(kill.log.split('\n').includes('[twin] probe: why a day has no file, by position: day(s) 2 exited 137'), 'one line in build.log');
+  assert.ok(kill.log.split('\n').filter(Boolean).length <= 16, 'build.log stays bounded');
+  const heap = await probeStepRun({ probeDays: days.join(','), extraDays: ['2026-11-14'], dieDays: [days[1]], dieCode: 134, dieSilent: true }); assert.equal(heap.r.status, 0, heap.r.stderr);
+  assert.ok(heap.r.stdout.split('\n').includes('[twin] probe day 2 of 3: node ran out of heap (PROBE_HEAP_MB is 3072): probe fewer days at once; the director raises PROBE_HEAP_MB in the workflow (RUNBOOK 3.2.1)'));
+  assert.ok(heap.log.split('\n').includes('[twin] probe: why a day has no file, by position: day(s) 2 exited 134'));
+  // a day that finished without a file (no requote day, so no source) is neither cut nor killed: no cause line, the "report lines only" line stays
+  const gap = await probeStepRun({ probeDays: days.join(',') }); assert.equal(gap.r.status, 0, gap.r.stderr);
+  assert.ok(!/why a day has no file/.test(gap.log) && !gap.r.stdout.split('\n').some((l) => /cut when|cut it|never started/.test(l)), 'days that finished with no file are not given a cause they do not have');
+  assert.ok(gap.r.stdout.split('\n').some((l) => /^\[twin\] probe day 3 of 3: its log holds only the stage's own report lines/.test(l)));
+});
+
+test('R3b fix 2: the advice about FIT days goes with a REQUESTED day that has no requote day, as a line of its own after the WARNING, and the cause stays in the WARNING', async () => {
+  const advice = '[twin] probe: for FIT days omit depth_model_run so the run fits and keeps their requote days (RUNBOOK 3.2.1)';
+  // only the day before the probe day is missing (the default dispatch's case): said once as a count, no advice, and a failure's WARNING carries the cause alone
+  const warm = await probeStepRun({ dropWarm: true, dieDays: [PROBE_DAY] }); assert.equal(warm.r.status, 0, warm.r.stderr);
+  assert.match(warm.log, /^\[twin\] probe: 1 requote day\(s\) \(a probe day or the day before one\) are not on Drive at this replay version; a probe never regenerates a day, so they are left out$/m);
+  assert.ok(!/omit depth_model_run|FIT day/.test(warm.log + warm.r.stdout), 'a missing warm-up day is no reason to advise about FIT days');
+  const ww = warm.log.split('\n').find((l) => l.startsWith('[twin] WARNING: the entry-state probe did not finish'))!;
+  assert.match(ww, /Last lines: day\(s\) 1 exited 7; no probe file was written; last lines: \[twin\] ERROR: boom on <day>: <ticker> at <day>\|(Error: boom on <day>: <ticker> at <day>)?\|+$/); assert.ok(!/\bat \S+ \(/.test(ww), 'no stack frame in the warning'); assert.ok(ww.length <= 299);
+  // the requested day has no requote day: the advice, as its own line after the WARNING, short; the WARNING holds no advice
+  const miss = await probeStepRun({ requote: 'none' }); assert.equal(miss.r.status, 0, miss.r.stderr);
+  const ml = miss.log.split('\n'), at = ml.findIndex((l) => l.startsWith('[twin] WARNING: the entry-state probe did not finish'));
+  assert.ok(at >= 0 && ml[at + 1] === advice, 'the advice follows the WARNING'); assert.ok(ml[at].length <= 299 && !/omit depth_model_run/.test(ml[at]) && /Last lines: no probe file was written \(a requested day has no requote day\); last lines: /.test(ml[at]));
+  assert.ok(advice.length <= 110);
+  // a WARNING with no requested-day gap and no day-process failure (the report stage failing) carries no advice either
+  const rep = await probeStepRun({ failStage: 'probe-report' }); assert.ok(!/omit depth_model_run/.test(rep.log + rep.r.stdout));
+  // a failed fill-in: its own last lines are the cause and are in the WARNING (the advice no longer pushes them out)
+  const noisy = await probeStepRun({ fillFails: true }); assert.equal(noisy.r.status, 0, noisy.r.stderr);
+  const nw = noisy.log.split('\n').find((l) => l.startsWith('[twin] WARNING: the entry-state probe did not finish'))!;
+  assert.match(nw, /Last lines: the depth fill-in of the probe's days failed; last lines: line 10 of the fill-in's error: contract <ticker> on <day>/); assert.ok(nw.length <= 299 && !/omit depth_model_run/.test(nw));
 });
