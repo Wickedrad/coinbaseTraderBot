@@ -86,7 +86,7 @@ jobs:
         working-directory: python
         run: |
           set -o pipefail
-          # backward block: the longest run of whole days before 2026-04-13 for both coins (a whole day = at least 90% of the median markets a day on 2026-04-13..30 for that
+          # backward block: the longest run of whole days before 2026-04-13 for both coins (a whole day = at least 70% of the median markets a day on 2026-04-13..30 for that
           # coin; a day only the never-traded markets reached is not one). The run's first day is dropped because its "previous day" is not whole. Chosen from market counts only.
           blk=$(python3 - <<'PY'
           import datetime, os, statistics, sys
@@ -98,7 +98,7 @@ jobs:
                   if f.endswith('.jsonl') and f[:2] == '20':
                       c.setdefault(f[:10], {})[s] = sum(1 for _ in open(os.path.join(d, f)))
           ref = {s: statistics.median(c[str(D(2026, 4, 13) + datetime.timedelta(days=i))][s] for i in range(18)) for s in ('KXBTC15M', 'KXETH15M')}
-          whole = lambda day: all(c.get(str(day), {}).get(s, 0) >= 0.9 * ref[s] for s in ref)
+          whole = lambda day: all(c.get(str(day), {}).get(s, 0) >= 0.7 * ref[s] for s in ref)
           lo = D.fromisoformat(min(c))
           runs, run, day = [], [], lo
           while day <= D(2026, 4, 12):
