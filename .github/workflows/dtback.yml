@@ -86,29 +86,38 @@ jobs:
         working-directory: python
         run: |
           set -o pipefail
-          # first backward day: the days before 2026-04-13 that came back as whole days for both coins (at least 85 markets a day; a day only the
-          # never-traded markets reached is not one), starting two days after the last short day so that every label rests on a whole previous day
-          first=$(python3 - <<'PY'
-          import datetime, os
+          # backward block: the longest run of whole days before 2026-04-13 for both coins (a whole day = at least 90% of the median markets a day on 2026-04-13..30 for that
+          # coin; a day only the never-traded markets reached is not one). The run's first day is dropped because its "previous day" is not whole. Chosen from market counts only.
+          blk=$(python3 - <<'PY'
+          import datetime, os, statistics, sys
+          D = datetime.date
           c = {}
           for s in ('KXBTC15M', 'KXETH15M'):
               d = f'../data/k15/kalshi/{s}'
               for f in os.listdir(d):
-                  if f.endswith('.jsonl') and f[:2] == '20' and f < '2026-04-13':
+                  if f.endswith('.jsonl') and f[:2] == '20':
                       c.setdefault(f[:10], {})[s] = sum(1 for _ in open(os.path.join(d, f)))
-          lo, hi = datetime.date.fromisoformat(min(c)), datetime.date(2026, 4, 12)
-          short = [lo]
-          day = lo
-          while day <= hi:
-              v = c.get(str(day), {})
-              if len(v) < 2 or min(v.values()) < 85:
-                  short.append(day)
+          ref = {s: statistics.median(c[str(D(2026, 4, 13) + datetime.timedelta(days=i))][s] for i in range(18)) for s in ('KXBTC15M', 'KXETH15M')}
+          whole = lambda day: all(c.get(str(day), {}).get(s, 0) >= 0.9 * ref[s] for s in ref)
+          lo = D.fromisoformat(min(c))
+          runs, run, day = [], [], lo
+          while day <= D(2026, 4, 12):
+              if whole(day):
+                  run.append(day)
+              else:
+                  if run:
+                      runs.append(run)
+                  run = []
               day += datetime.timedelta(days=1)
-          print(max(short) + datetime.timedelta(days=2))
+          if run:
+              runs.append(run)
+          print('markets a day on 2026-04-13..30 (median): ' + str(ref) + '; earliest file ' + str(lo) + '; whole-day runs before 2026-04-13: ' + ', '.join(f'{r[0]}..{r[-1]} ({len(r)})' for r in runs), file=sys.stderr)
+          best = max(runs, key=len) if runs else []
+          print(f'{best[1]}:{best[-1]}' if len(best) >= 22 else 'none')
           PY
           )
-          echo "backward block: $first to 2026-04-12"
-          if [[ "$first" > "2026-03-24" ]]; then echo "::error::fewer than 20 whole days before 2026-04-13 came back"; exit 1; fi
-          python3 -W ignore -m subminute.fresh --hist ../data/k15 --assets BTC,ETH --kind m15 --out ../out/back-k15 --back "$first:2026-04-12" 2>&1 | tail -8 | cut -c1-9000
+          echo "backward block: $blk"
+          if [ "$blk" = none ]; then echo "::error::no run of 22 whole days before 2026-04-13"; exit 1; fi
+          python3 -W ignore -m subminute.fresh --hist ../data/k15 --assets BTC,ETH --kind m15 --out ../out/back-k15 --back "$blk" 2>&1 | tail -8 | cut -c1-9000
       - name: Keep the table on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/fresh/k15back" out/back-k15
