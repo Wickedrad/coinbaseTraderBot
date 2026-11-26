@@ -1256,55 +1256,6 @@ jobs:
       - name: Keep the table on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/fresh/k15" out/fresh-k15
 
-  # Round EA-6, part 3 (recorded days only): SOL and XRP 15-minute candles (public API, read only, kept on Drive), the day types of round 5c, and the saved rule T1 read in every scope.
-  dtsx:
-    needs: test
-    if: contains(needs.test.outputs.stage, 'dtsx')
-    runs-on: ubuntu-latest
-    timeout-minutes: 130
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-      - name: Restore dependencies
-        id: deps
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install dependencies
-        if: steps.deps.outputs.cache-hit != 'true'
-        run: npm ci --no-audit --no-fund --silent --ignore-scripts
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install -q numpy==2.5.5
-      - name: Drive setup
-        uses: ./.github/actions/drive-setup
-        with:
-          rclone_conf: ${{ secrets.RCLONE_CONF }}
-      - name: Candles already kept on Drive (the fetch below only adds what is missing)
-        run: |
-          set -uo pipefail
-          for s in KXSOL15M KXXRP15M; do mkdir -p "data/k15x/kalshi/$s"; bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$s" "data/k15x/kalshi/$s" || echo "no $s on Drive yet"; done
-      - name: Candles of the settled markets (public API, 10 requests a second, at most 150 days, at most 9,000 markets a series)
-        run: |
-          set -uo pipefail
-          timeout 95m node --import tsx research/history/kalshiHistory.ts --series KXSOL15M,KXXRP15M --days 150 --max-markets 9000 --out data/k15x/kalshi --budget-min 90 2>&1 | tail -6 | cut -c1-300
-          for s in KXSOL15M KXXRP15M; do echo "$s: $(ls data/k15x/kalshi/$s 2>/dev/null | grep -c jsonl) day file(s), first $(ls data/k15x/kalshi/$s 2>/dev/null | grep jsonl | head -1), last $(ls data/k15x/kalshi/$s 2>/dev/null | grep jsonl | tail -1)"; done
-      - name: Keep the candles on Drive
-        run: |
-          set -uo pipefail
-          for s in KXSOL15M KXXRP15M; do [ -d "data/k15x/kalshi/$s" ] && bash deploy/drive_lab.sh put "raw/oracle-history/kalshi/$s" "data/k15x/kalshi/$s" || echo "no $s to keep"; done
-      - name: Day types and the saved rule T1 (build the first half of the days, check the next quarter, clean the last quarter; typed rules against label-shifted placebos)
-        working-directory: python
-        run: |
-          set -o pipefail
-          python3 -W ignore -m subminute.daytypes --kind m15 --hist ../data/k15x --assets SOL,XRP --watch yes:0.9:6:ptrend:low --out ../out/dt-solxrp 2>&1 | tail -9 | cut -c1-4000
-      - name: Keep the tables on Drive
-        run: bash deploy/drive_lab.sh put "models/subminute/daytypes/solxrp" out/dt-solxrp
-
   # Day types on the candles already kept on Drive (no fetch): the hourly ladders (206 days) and the 15-minute families of round 5b.
   dtread:
     needs: test
