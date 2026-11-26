@@ -211,6 +211,47 @@ def summarize(programs: list, schedules: list, pool: float, label: str) -> dict:
     return out
 
 
+WIDE = ('BTC', 'BITCOIN', 'ETH', 'ETHER', 'SOL', 'SOLANA', 'XRP', 'RIPPLE', 'CRYPTO', 'COIN')
+
+
+def wide_scan(programs: list, schedules: list) -> list:
+    """Information only (added after the first read, see the amendment in the pre-registration): every series whose
+    ticker holds a crypto word anywhere, so a series the strict KX<COIN> rule would miss is seen. DOGE is left out."""
+    seen = collections.Counter()
+    for r in programs:
+        s = series_of(r).upper()
+        if 'DOGE' not in s and any(w in s for w in WIDE):
+            seen[s] += 1
+    for r in schedules:
+        s = (r.get('series_ticker') or '').upper()
+        cat = (r.get('series_category') or '').lower()
+        if 'DOGE' not in s and (any(w in s for w in WIDE) or 'crypto' in cat):
+            seen[s + ' (schedule)'] += 1
+    return sorted(seen.items())
+
+
+def all_programs_ceiling(programs: list, pool: float) -> None:
+    """Information only (added after the first read): what the same pool could at best collect on ANY market's liquidity
+    program. Share = size / target, so the best use of the pool is the market with the most reward per day per target
+    contract. A ceiling: orders at the Reference Price all period, the rest of the side just reaching the target,
+    every snapshot counting, and no fill loss."""
+    rows = [program_row(p) for p in programs]
+    rows = [r for r in rows if r['type'] == 'liquidity' and r['target'] and r['per_day']]
+    if not rows:
+        return
+    size = pool / PAIR_COST
+    for r in rows:
+        r['pool_day'] = min(1.0, size / r['target']) * r['per_day']
+    rows.sort(key=lambda r: -r['pool_day'])
+    days = sorted(r['per_day'] for r in rows)
+    tg = collections.Counter(r['target'] for r in rows)
+    print(f'   all liquidity programs: reward per market per day, min / median / max ${days[0]:.2f} / ${statistics.median(days):.2f} / ${days[-1]:.2f}; '
+          f'target sizes {dict(tg.most_common(4))}')
+    print(f'   best single markets for {size:.0f} contracts a side (ceiling, before any fill loss):')
+    for r in rows[:8]:
+        print(f'     {r["series"]:24s} ${r["per_day"]:8.2f} a day for the market, target {r["target"]:.0f}: at most ${r["pool_day"]:.2f} a day = ${r["pool_day"] / 24:.2f} an hour')
+
+
 def verdict(active: dict, upcoming: dict, pool: float) -> str:
     n = active.get('liq_15m_hourly', 0) + upcoming.get('liq_15m_hourly', 0)
     if n == 0 and not (active.get('crypto_schedules') or upcoming.get('crypto_schedules')):
@@ -250,6 +291,12 @@ def main(argv=None) -> int:
     if not shown:
         for p in (act + upc)[:3]:
             print('   (no crypto row; a sample row) ' + json.dumps(p, sort_keys=True)[:700])
+    print('\ninformation only, not part of the test:')
+    cats = collections.Counter((x.get('series_category') or '?') for x in sch)
+    print(f'   schedules by category: {dict(cats.most_common(12))}')
+    wide = wide_scan(act + upc, sch)
+    print(f'   series with a crypto word anywhere in the ticker, or a crypto schedule category (DOGE left out): {wide if wide else "none"}')
+    all_programs_ceiling(act, a.pool)
     v = verdict(ra, ru, a.pool)
     print('\nVERDICT (list alone): ' + v)
     if a.out:

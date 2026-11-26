@@ -48,6 +48,11 @@ class RewardsTest(unittest.TestCase):
         self.assertTrue(v.startswith('CLOSED: the smallest target size'))
         self.assertTrue(R.verdict({'liq_15m_hourly': 3, 'smallest_target': 150.0}, {}, 200).startswith('NOT CLOSED'))
 
+    def test_wide_scan_sees_what_the_strict_rule_misses_and_never_doge(self):
+        progs = [prog('BITCOINMAX-A', series='BITCOINMAX'), prog('KXDOGE15M-A'), prog('KXHIGHNY-A'), prog('KXBTCD-A')]
+        sch = [{'series_ticker': 'ZZZ', 'series_category': 'Crypto'}, {'series_ticker': 'KXDOGED', 'series_category': 'Crypto'}]
+        self.assertEqual(R.wide_scan(progs, sch), [('BITCOINMAX', 1), ('KXBTCD', 1), ('ZZZ (schedule)', 1)])
+
     def test_main_from_file(self):
         d = {'programs': [prog('KXBTC15M-A'), prog('KXHIGHNY-A', reward_cc=900000), prog('KXDOGE15M-A')], 'upcoming': [],
              'schedules': [{'series_ticker': 'KXETH15M', 'incentive_type': 'liquidity', 'reward': 10000, 'window_days': 0,

@@ -48,6 +48,22 @@ The test, fixed now.
 Run: `python3 -m auditpath.rewards` in `python/`, workflow `.github/workflows/audit-path-rewards.yml`, started by a
 push that changes `research/audit_path/RUN-REWARDS`.
 
+### Part 3, amendment 1 (written Nov 25 9:29 PM EST / 2026-11-26T02:29Z, after the first read)
+
+- Time stamp. Part 3 was committed at Nov 25 9:27 PM EST (Nov 26 02:27 UTC) in commit 84eb611, before the read. The
+  "9:35 PM EST / 02:35 UTC" in its heading was my estimate and was a few minutes ahead; the trigger file's time was too.
+- First read: run 45742546147, read at Nov 26 02:27 UTC. 6,446 active programs (all of the liquidity type, $639,268 in
+  period rewards), 1,827 upcoming ($163,310), 559 schedules. Rows on a BTC, ETH, SOL or XRP series: 0 active,
+  0 upcoming, 0 schedules. VERDICT by the first closing line: CLOSED, no crypto 15-minute or hourly market is in a
+  liquidity program.
+- A closing line that was wrong as written and was not used: "the smallest Target Size is more than the pool can post".
+  The Target Size is the depth the whole side of the book must reach for a snapshot to count, not what one account
+  must post. An account's share is its own size over the qualifying size.
+- Added for a second read, as information only and not part of the test: a wider scan (any series with a crypto word
+  anywhere in its ticker, or a crypto schedule category), the schedules by category, and the best-case dollars the same
+  pool could collect on any market's program (share = size / target, before any fill loss). It cannot change the
+  verdict above, which is about the contracts the bot trades.
+
 ## Part 1: the one test on the lane's own calls (to be written and committed before its first read)
 
 ## Part 2: the last three minutes of the 15-minute window (to be written and committed before its first read)
