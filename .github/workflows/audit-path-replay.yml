@@ -1,0 +1,166 @@
+name: Audit path part B, the curve calls replayed
+# Research only (research/audit_path/PREREG-AP.md, part 1, part B, the calls table): the deployed curve reader (python/heat_reader, its pack in
+# research/oracle_heat/latest, window 3000) is run at every minute close from 2026-08-01 00:00 to 2026-11-04 23:59 UTC on Binance one-minute bars (BTC, ETH),
+# and the lane's own rule (bot/heat/heatLane.ts, through research/audit_path/decideCalls.ts) decides the call per coin and horizon (15 and 60 minutes).
+# No Kalshi file is read and no price is joined here. Recorded days only, paper only, no order, no bot change.
+# Aggregates only in the logs (counts, shares, seconds, hashes); the calls tables go to private Drive (derived/audit-path/calls).
+#
+# Started by a push that changes research/audit_path/RUN-REPLAY. The LAST non-empty line of that file is the command:
+#   smoke   one job: BTC, the first 600 minutes of Aug 1; prints the seconds per coin-minute so the block size below can be set
+#   calls   a matrix of coin x 12-day block (BTC and ETH, Aug 1 to Nov 4, each day once), at most 10 jobs at a time
+# Block size: assumed 0.16 s per coin-minute (docs/HEAT_READER.md), so 12 days = 17,280 minutes = about 46 minutes; the limit is 240 minutes a job.
+# Change the blocks only in whole days that start the day after the block before and keep the union Aug 1 to Nov 4 exactly once.
+on:
+  push:
+    branches: [claude/project-thread-y1uc2x]
+    paths: ['research/audit_path/RUN-REPLAY']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-path-replay
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      cmd: ${{ steps.cmd.outputs.cmd }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: The command is the last non-empty line of RUN-REPLAY
+        id: cmd
+        run: |
+          set -euo pipefail
+          C=$(sed '/^[[:space:]]*$/d' research/audit_path/RUN-REPLAY | tail -n 1 | tr -d '[:space:]')
+          case "$C" in smoke|calls) ;; *) echo "::error::RUN-REPLAY must end with smoke or calls, not '$C'"; exit 1 ;; esac
+          echo "cmd=$C" >> "$GITHUB_OUTPUT"
+          echo "AUDITPATH plan {\"cmd\":\"$C\"}"
+
+  smoke:
+    needs: plan
+    if: needs.plan.outputs.cmd == 'smoke'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib; the key train.yml, history-build and perp-ta share)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: The reader's own pinned dependencies (hashed wheels for numpy, pandas and TA-Lib)
+        run: |
+          pip install -q --require-hashes --only-binary=:all: -r python/heat_reader/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The one-minute bars of BTC
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/BTC/binance-1m" data/bars --include "/BTC/1m.csv" || { echo "::error::BTC one-minute bars not readable on Drive"; exit 1; }
+          ls -l data/bars/BTC/1m.csv | awk '{print "AUDITPATH bars {\"BTC_csv_bytes\":" $5 "}"}'
+      - name: The replay's own tests (the lane's rule against its TypeScript original runs here)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -m unittest auditpath.tests.test_replay 2>&1 | tail -4
+      - name: Smoke, BTC, the first 600 minutes of Aug 1 (timing only)
+        working-directory: python
+        run: |
+          set -o pipefail
+          mkdir -p ../out
+          python3 -W ignore -m auditpath.replay calls --coin BTC --bars ../data/bars/BTC/1m.csv --from 2026-08-01 --to 2026-08-01 \
+            --out ../out/smoke-BTC.jsonl.gz --limit-minutes 600 2>&1 | cut -c1-3000
+
+  calls:
+    needs: plan
+    if: needs.plan.outputs.cmd == 'calls'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        coin: [BTC, ETH]
+        block:
+          - 2026-08-01_2026-08-12
+          - 2026-08-13_2026-08-24
+          - 2026-08-25_2026-09-05
+          - 2026-09-06_2026-09-17
+          - 2026-09-18_2026-09-29
+          - 2026-09-30_2026-10-11
+          - 2026-10-12_2026-10-23
+          - 2026-10-24_2026-11-04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib; the key train.yml, history-build and perp-ta share)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: The reader's own pinned dependencies (hashed wheels for numpy, pandas and TA-Lib)
+        run: |
+          pip install -q --require-hashes --only-binary=:all: -r python/heat_reader/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The one-minute bars of the coin
+        env:
+          COIN: ${{ matrix.coin }}
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$COIN/binance-1m" data/bars --include "/$COIN/1m.csv" || { echo "::error::$COIN one-minute bars not readable on Drive"; exit 1; }
+          ls -l "data/bars/$COIN/1m.csv" | awk -v c="$COIN" '{print "AUDITPATH bars {\"coin\":\"" c "\",\"csv_bytes\":" $5 "}"}'
+      - name: The replay's own tests (the lane's rule against its TypeScript original runs here)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -m unittest auditpath.tests.test_replay 2>&1 | tail -4
+      - name: The calls of the block (no Kalshi file is read)
+        env:
+          COIN: ${{ matrix.coin }}
+          BLOCK: ${{ matrix.block }}
+        working-directory: python
+        run: |
+          set -o pipefail
+          FROM=${BLOCK%_*}; TO=${BLOCK#*_}
+          mkdir -p ../out
+          python3 -W ignore -m auditpath.replay calls --coin "$COIN" --bars "../data/bars/$COIN/1m.csv" --from "$FROM" --to "$TO" \
+            --out "../out/calls-$COIN-${FROM}_${TO}.jsonl.gz" 2>&1 | cut -c1-3000
+      - name: The calls table to private Drive (derived/audit-path/calls)
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh put derived/audit-path/calls out --include "calls-*.jsonl.gz"

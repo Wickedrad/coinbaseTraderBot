@@ -197,6 +197,21 @@ Two independent critics checked the code against this part; where the text left 
 - The fill-price variant uses the trip's order time as the fill time (at or before the real fill); information only.
 - The candles of the traded tickers are kept on private Drive between runs, not in an Actions cache.
 
+### Part 1, amendment 2 (written Nov 25 10:02 PM EST / Nov 26 03:02 UTC, BEFORE part B's calls are made: how the replay reads the rules above)
+
+Two independent critics checked the replay against part B; where the text left room, the reading taken is:
+- A minute close is the close time: 00:00 through 23:59 UTC of each day, 1,440 a day, Aug 1 through Nov 4.
+- The firing rows and the decided call come from the lane's real code (parseHeatCalls, readHeatCalls and decideCall in
+  `bot/heat/heatLane.ts`, run through `research/audit_path/decideCalls.ts`), with the code's default settings (top 10,
+  lag 45 s, a pair against its single is skipped). The server's own bot.env cannot be read from the repo.
+- A pair or triple that calls against the single it refines is skipped by the lane. It stays in the table with a flag
+  and is not an entry in the join.
+- The reader runs with its own pinned wheels (`python/heat_reader/requirements.txt`). Warm-up: about 152 days of bars
+  before Aug 1.
+- 16 shards (BTC and ETH, eight 12-day blocks) each print the sha256 of their file; the join prints one hash over all
+  rows before it opens any Kalshi file.
+- Read-log line 11 was added to `/mnt/project-files/registry/edge-pipeline/calendar.md` before the push.
+
 ## Part 2: the last three minutes of the 15-minute window (written Nov 25 2026, 9:40 PM EST / Nov 26 02:40 UTC, before any read)
 
 Question. The 15-minute contract settles YES when the 60-second average of the index before the close is at or above
