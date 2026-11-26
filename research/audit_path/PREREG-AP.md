@@ -236,6 +236,17 @@ the reading taken is:
 - Every shard row with a skip flag is dropped before the hash; the one hash over all kept rows is printed before any
   Kalshi file is opened.
 
+### Part 1, note after part B's read (written Nov 25 11:05 PM EST / Nov 26 04:05 UTC; changes nothing above)
+
+Part B's join ran once (run 45751841770, job 139681224248, Nov 26 03:56 to 04:00 UTC). It printed the calls hash
+first (1b6b61bc..., 143,386 rows, 16 shards) and then every result line. The step then ended with exit code 1: its
+last command, `grep -v '^AUDITPATH '`, found no other line, and under `set -o pipefail` that is a failure. So the
+next step, which keeps the aggregate JSON on private Drive, was skipped and the runner removed the file. The hourly
+half was available (68.7% of the 60-minute calls had a strike with a YES mid of 10c to 90c, line 0.50), so no
+hourly-only analysis was held back. The printed lines are the record of the read. The join is not run again: a rerun
+would be a second read of HO-1. The tidy-up command is fixed in this commit in the join and part A workflows; neither
+starts a run on this change.
+
 ## Part 2: the last three minutes of the 15-minute window (written Nov 25 2026, 9:40 PM EST / Nov 26 02:40 UTC, before any read)
 
 Question. The 15-minute contract settles YES when the 60-second average of the index before the close is at or above

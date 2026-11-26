@@ -95,7 +95,7 @@ jobs:
           python3 -W ignore -m auditpath.joincalls --calls "$RUNNER_TEMP/join-calls" --m15 "$RUNNER_TEMP/join-m15" --hourly "$RUNNER_TEMP/join-hourly" \
             --from 2026-08-01 --to 2026-11-04 --out "$RUNNER_TEMP/join-b.json" > "$RUNNER_TEMP/join.log" 2>&1 || { echo "::error::the join failed"; grep -E '^ +File "' "$RUNNER_TEMP/join.log" | tail -6 | cut -c1-200; grep -oE '^[A-Za-z_.]+(Error|Exception)' "$RUNNER_TEMP/join.log" | tail -1; grep -E '^auditpath\.joincalls\.JoinError: ' "$RUNNER_TEMP/join.log" | tail -1 | cut -c1-300; exit 1; }
           grep '^AUDITPATH ' "$RUNNER_TEMP/join.log" | cut -c1-3000
-          grep -v '^AUDITPATH ' "$RUNNER_TEMP/join.log" | tail -3 | cut -c1-200
+          { grep -v '^AUDITPATH ' "$RUNNER_TEMP/join.log" || true; } | tail -3 | cut -c1-200
       - name: Keep the aggregate JSON on private Drive
         run: |
           set -uo pipefail

@@ -62,7 +62,7 @@ jobs:
           python3 -W ignore -m auditpath.onetest trips --work "$RUNNER_TEMP/onetest-work" --cache "$RUNNER_TEMP/onetest-candles" \
             --from 2026-11-12 --out "$RUNNER_TEMP/onetest-a.json" > "$RUNNER_TEMP/onetest.log" 2>&1 || { echo "::error::the test failed"; grep -E '^ +File "' "$RUNNER_TEMP/onetest.log" | tail -6 | cut -c1-200; grep -oE '^[A-Za-z_.]+(Error|Exception)' "$RUNNER_TEMP/onetest.log" | tail -1; exit 1; }
           grep '^AUDITPATH ' "$RUNNER_TEMP/onetest.log" | cut -c1-3000
-          grep -v '^AUDITPATH ' "$RUNNER_TEMP/onetest.log" | tail -5 | cut -c1-300
+          { grep -v '^AUDITPATH ' "$RUNNER_TEMP/onetest.log" || true; } | tail -5 | cut -c1-300
       - name: Keep the fetched candles on private Drive for a later run
         if: always()
         run: |
