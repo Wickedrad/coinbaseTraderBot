@@ -561,8 +561,13 @@ def extras_a(pairs):
     items = [p[2] for p in pairs]
     sc = [i for i in items if i['scored']]
     win = [i for i in sc if i['window']]
-    pnl = [(float(r['pnl']), int(r['count_filled'])) for _, r, _ in pairs
-           if r.get('pnl') is not None and r.get('count_filled')]
+    def _cnt(r):
+        try:
+            return float(r.get('count_filled') or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    # Counts are taken as recorded (a paper fill can hold a fraction of a contract); a trip with none is left out.
+    pnl = [(float(r['pnl']), _cnt(r)) for _, r, _ in pairs if r.get('pnl') is not None and _cnt(r) > 0]
     reasons = collections.Counter(i['reason'] for i in items if not i['scored'])
     return {'entries': len(pairs), 'fill_test_scored': len(sc), 'fill_test_window_rate': _r(len(win) / len(sc)) if sc else None,
             'fill_test_median_minutes_to_first_window': _r(statistics.median([i['minutes'] for i in win]), 2) if win else None,

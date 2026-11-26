@@ -197,6 +197,13 @@ Two independent critics checked the code against this part; where the text left 
 - The fill-price variant uses the trip's order time as the fill time (at or before the real fill); information only.
 - The candles of the traded tickers are kept on private Drive between runs, not in an Actions cache.
 
+### Part 1, amendment 1a (written Nov 25 10:19 PM EST / Nov 26 03:19 UTC, after a failed run that printed no result)
+
+Part A's first run (run 45745559632) stopped with a division by zero before printing anything: a paper trip can record
+a fill of less than one contract, and the lane's realized cents per contract divided by the whole-contract count (0).
+No number from the test was printed or seen. The fix reads the recorded count as it is (a trip with no count is left
+out of that one figure). The rules above are unchanged, and the rerun is the same first read.
+
 ### Part 1, amendment 2 (written Nov 25 10:02 PM EST / Nov 26 03:02 UTC, BEFORE part B's calls are made: how the replay reads the rules above)
 
 Two independent critics checked the replay against part B; where the text left room, the reading taken is:

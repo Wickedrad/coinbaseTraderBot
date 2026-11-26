@@ -376,5 +376,18 @@ class PartA(unittest.TestCase):
             self.assertEqual(res2['rows']['tickers_without_candles'], 1)
 
 
+class TestFractionalCounts(unittest.TestCase):
+    def test_extras_a_takes_fractional_and_zero_counts(self):
+        """A recorded count under one contract (0.5) must not divide by zero; a zero or missing count is left out."""
+        from auditpath import onetest as ot
+        item = {'scored': False, 'reason': 'no fill price or size', 'window': None}
+        rows = [{'pnl': -0.25, 'count_filled': 0.5}, {'pnl': 1.0, 'count_filled': 10}, {'pnl': 2.0, 'count_filled': 0},
+                {'pnl': 3.0}]
+        out = ot.extras_a([({}, r, item) for r in rows])
+        self.assertEqual(out['realized_trips'], 2)
+        self.assertAlmostEqual(out['realized_cents_per_contract'], 100.0 * 0.75 / 10.5, places=3)
+        self.assertAlmostEqual(out['realized_cents_per_contract_mean_of_trips'], (-50.0 + 10.0) / 2, places=3)
+
+
 if __name__ == '__main__':
     unittest.main()
