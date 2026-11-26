@@ -41,6 +41,8 @@ def read(w, blocks_days: dict, rule: tuple, feature: str, level: str, assets=Non
     have[(days - day0).astype(int)] = True
     blocks = {name: have & (dn >= dnum(a)) & (dn <= dnum(b)) for name, (a, b) in blocks_days.items()}
     lab, cuts = DT.labels(w, day0, nd, blocks['build'])
+    if 'fresh' in blocks and 'back' in blocks:                                          # every day the rule has never seen, in one block
+        blocks['unseen'] = blocks['fresh'] | blocks['back']
     if feature not in lab:
         raise ValueError(f'no label {feature}')
     lv = DT.LEVELS[feature].index(level)
@@ -58,31 +60,34 @@ def read(w, blocks_days: dict, rule: tuple, feature: str, level: str, assets=Non
             row[bn] = DT._c(DT._stat(A, bm & on, 1))
             row[bn + '_other'] = DT._c(DT._stat(A, bm & ~on & known, 1))
             row[bn + '_all'] = DT._c(DT._stat(A, bm & known, 1))
-        pool = np.where(blocks['fresh'] & known)[0]                                    # permutation check on the fresh block
-        k = int((blocks['fresh'] & on).sum())
-        fills, net = A[:, 4], A[:, 5]
-        if k >= 1 and len(pool) > k and fills[pool].sum() > 0:
-            typed_idx = np.where(blocks['fresh'] & on)[0]
-            obs = net[typed_idx].sum() / max(1.0, fills[typed_idx].sum())
-            ge = 0
-            for _ in range(perms):
-                pick = rng.choice(pool, size=k, replace=False)
-                f = fills[pick].sum()
-                if f > 0 and net[pick].sum() / f >= obs:
-                    ge += 1
-            row['fresh_permutation_p'] = round((1 + ge) / (1 + perms), 4)
+        for pn in ('fresh', 'back'):                                                    # permutation check on each unseen block
+            if pn not in blocks:
+                continue
+            pool = np.where(blocks[pn] & known)[0]
+            k = int((blocks[pn] & on).sum())
+            fills, net = A[:, 4], A[:, 5]
+            if k >= 1 and len(pool) > k and fills[pool].sum() > 0:
+                typed_idx = np.where(blocks[pn] & on)[0]
+                obs = net[typed_idx].sum() / max(1.0, fills[typed_idx].sum())
+                ge = 0
+                for _ in range(perms):
+                    pick = rng.choice(pool, size=k, replace=False)
+                    f = fills[pick].sum()
+                    if f > 0 and net[pick].sum() / f >= obs:
+                        ge += 1
+                row[pn + '_permutation_p'] = round((1 + ge) / (1 + perms), 4)
         rows.append(row)
     pooled = DT.pooled(acc, [k for k in acc if k[0][3] == longest and k[2] == 'ALL' and k[1] == 'ALL'], nd)
     return {'blocks': {n: [str(np.datetime64('1970-01-01') + np.timedelta64(int(dn[m].min()), 'D')), str(np.datetime64('1970-01-01') + np.timedelta64(int(dn[m].max()), 'D')), int(m.sum())] if m.any() else None for n, m in blocks.items()},
             'cuts_from_build': {k: v for k, v in cuts.items() if k == feature}, 'rows': rows, 'levels_all_rules': DT.level_table(pooled, {f: L for f, L in lab.items() if f in ('wkend', feature)}, blocks)}
 
 
-def verdict(row: dict, min_fills: int = 100) -> dict:
+def verdict(row: dict, min_fills: int = 100, block: str = 'fresh') -> dict:
     """Written before the days were read: the rule is SUPPORTED on the fresh days if, over ALL scope, the typed days' mean is above zero with at least `min_fills` fills and at least a
     quarter of a cent above the other days; CONTRADICTED if the typed days' mean is at or below zero or below the other days'; otherwise too thin to say."""
-    f, o = row.get('fresh'), row.get('fresh_other')
+    f, o = row.get(block), row.get(block + '_other')
     if f is None or f['fills'] < min_fills:
-        return {'verdict': 'too thin', 'why': 'under the fill floor on the typed fresh days'}
+        return {'verdict': 'too thin', 'why': 'under the fill floor on the typed days'}
     gap = None if o is None else f['net_c'] - o['net_c']
     if f['net_c'] <= 0 or (gap is not None and gap < 0):
         return {'verdict': 'contradicted', 'gap_c': gap}
@@ -103,16 +108,22 @@ if __name__ == '__main__':
     ap.add_argument('--check', default='2026-07-25:2026-09-13')
     ap.add_argument('--clean', default='2026-09-14:2026-11-04')
     ap.add_argument('--fresh', default='2026-11-05:2026-11-25')
+    ap.add_argument('--back', default=None, help='first:last of recorded days before the build block, read as a second unseen block (round EA-6 part 4)')
     ap.add_argument('--perms', type=int, default=5000)
     a = ap.parse_args()
     split = lambda s: tuple(s.split(':'))
     with FP.pk_settings(a.kind):
         w = DT.load(a.hist, a.kind, [x.strip().upper() for x in a.assets.split(',')], None, log=lambda *x: None)
-        r = read(w, {'build': split(a.build), 'check': split(a.check), 'clean': split(a.clean), 'fresh': split(a.fresh)}, tuple(a.rule.split(':')), *a.type.split(':'),
-                 perms=a.perms, log=lambda *x: None)
+        blocks = {'build': split(a.build), 'check': split(a.check), 'clean': split(a.clean), 'fresh': split(a.fresh)}
+        if a.back:
+            blocks['back'] = split(a.back)
+        r = read(w, blocks, tuple(a.rule.split(':')), *a.type.split(':'), perms=a.perms, log=lambda *x: None)
     os.makedirs(a.out, exist_ok=True)
     for row in r['rows']:
         row['verdict'] = verdict(row)
+        if a.back:
+            row['verdict_back'] = verdict(row, block='back')
+            row['verdict_unseen'] = verdict(row, min_fills=250, block='unseen')
     json.dump(r, open(os.path.join(a.out, 'fresh_read.json'), 'w'), indent=1, sort_keys=True, default=float)
     print('HEATLOOP fresh-blocks ' + json.dumps({'blocks': r['blocks'], 'cuts_from_build': r['cuts_from_build']}, sort_keys=True), flush=True)
     cell = lambda x: '-' if x is None else (f"{x['net_c']:+.2f}c" + ('' if x['lo_c'] is None else f" [{x['lo_c']}]") + f" ({x['days']}d,{x['fills']})")

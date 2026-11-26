@@ -1,0 +1,93 @@
+name: Round EA-6 backward read of T1
+# Research only (research/edge_atlas/PREREG-EA6.md, part 4): BTC and ETH 15-minute candles for the recorded days before 2026-04-13 (public API, read only, kept on Drive),
+# and the saved rule T1 read once on them, with the fresh days of Nov 5 to Nov 25 pooled in. Recorded days only, paper only, no order, no bot change. Aggregates only.
+# Its own workflow and concurrency group so it runs beside the SOL and XRP read; started by a push that changes research/edge_atlas/RUN-DTBACK.
+on:
+  push:
+    branches: [claude/project-thread-y4m0kp]
+    paths: ['research/edge_atlas/RUN-DTBACK']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dtback
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  dtback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib; the key train.yml, history-build and perp-ta share)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The candles already kept (BTC and ETH 15-minute, 2026-04-13 to 2026-11-04 from raw/kalshi-history, Nov days from raw/oracle-history, and any earlier day kept there), compact days decoded
+        run: |
+          set -euo pipefail
+          for A in BTC ETH; do
+            S="KX${A}15M"; D="data/k15/kalshi/$S"; mkdir -p "$D"
+            x='{jsonl,jsonl.mdc}'
+            bash deploy/drive_lab.sh get "raw/kalshi-history/kalshi/$S" "$D" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
+              --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-1[01]-[0-3][0-9].$x" \
+              || { echo "::error::raw/kalshi-history/kalshi/$S not readable on Drive"; exit 1; }
+            bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$S" "$D" --include "/2026-1[01]-[0-3][0-9].$x" || echo "no later days kept for $S yet"
+            shopt -s nullglob
+            for f in "$D"/*.jsonl.mdc; do [ ! -f "${f%.mdc}" ] || rm "$f"; done
+            m=("$D"/*.jsonl.mdc)
+            if [ "${#m[@]}" -gt 0 ]; then echo "$A: ${#m[@]} day(s) only in compact form: decoded"; npx tsx scripts/mdc.ts expand "$D" > /dev/null; rm -f "${m[@]}"; fi
+            shopt -u nullglob
+            days=("$D"/*.jsonl); echo "$S: ${#days[@]} day files, $(basename "${days[0]}") .. $(basename "${days[$((${#days[@]} - 1))]}")"
+            cp "$D/2026-04-13.jsonl" "/tmp/$S-2026-04-13.jsonl" 2>/dev/null || echo "$S has no 2026-04-13 file"
+          done
+      - name: Candles of the settled markets before 2026-04-13 (public API, read only; markets already stored are skipped; newest first; BTC and ETH at the same time, 40 minutes at most)
+        run: |
+          set -uo pipefail
+          for S in KXBTC15M KXETH15M; do
+            ( timeout 50m node --import tsx research/history/kalshiHistory.ts --series "$S" --days 345 --max-markets 6000 --out data/k15/kalshi --budget-min 40 2>&1 | tail -4 | cut -c1-300 | sed "s/^/$S: /" ) &
+          done
+          wait
+          # the first day of the old window may have been cut part way: put it back as the earlier rounds read it, so the build block reproduces
+          for S in KXBTC15M KXETH15M; do [ -f "/tmp/$S-2026-04-13.jsonl" ] && cp "/tmp/$S-2026-04-13.jsonl" "data/k15/kalshi/$S/2026-04-13.jsonl"; done
+          rm -f data/k15/kalshi/KX*15M/2026-11-26.jsonl data/k15/kalshi/KX*15M/2026-11-27.jsonl
+          for S in KXBTC15M KXETH15M; do days=(data/k15/kalshi/$S/*.jsonl); echo "$S: ${#days[@]} day files, $(basename "${days[0]}") .. $(basename "${days[$((${#days[@]} - 1))]}"); before: $(ls data/k15/kalshi/$S | grep -c '^202[56]-0[1-4]-.*jsonl$' ) files in Jan-Apr"; done
+      - name: Keep the earlier days on Drive (raw/oracle-history/kalshi)
+        run: |
+          set -uo pipefail
+          for S in KXBTC15M KXETH15M; do rm -rf "back-keep/$S"; mkdir -p "back-keep/$S"; for f in data/k15/kalshi/$S/*.jsonl; do b=$(basename "$f"); [[ "$b" < "2026-04-13.jsonl" ]] && cp "$f" "back-keep/$S/"; done; bash deploy/drive_lab.sh put "raw/oracle-history/kalshi/$S" "back-keep/$S" || echo "could not keep $S"; done
+      - name: The saved rule T1 read on the days before 2026-04-13 and on the fresh days pooled in (the build, check, clean and fresh blocks re-read as a plumbing check)
+        working-directory: python
+        run: |
+          set -o pipefail
+          # first backward day: the later of the two coins' earliest files, plus one day (the earliest file can be cut part way by the time budget)
+          fb=$(ls ../data/k15/kalshi/KXBTC15M | grep '^20.*jsonl$' | head -1 | cut -c1-10); fe=$(ls ../data/k15/kalshi/KXETH15M | grep '^20.*jsonl$' | head -1 | cut -c1-10)
+          first=$([[ "$fb" > "$fe" ]] && echo "$fb" || echo "$fe"); first=$(date -u -d "$first + 1 day" +%F)
+          echo "backward block: $first to 2026-04-12"
+          if [[ "$first" > "2026-04-12" ]]; then echo "::error::no days before 2026-04-13 came back"; exit 1; fi
+          python3 -W ignore -m subminute.fresh --hist ../data/k15 --assets BTC,ETH --kind m15 --out ../out/back-k15 --back "$first:2026-04-12" 2>&1 | tail -8 | cut -c1-9000
+      - name: Keep the table on Drive
+        run: bash deploy/drive_lab.sh put "models/subminute/fresh/k15back" out/back-k15

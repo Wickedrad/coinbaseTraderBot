@@ -23,3 +23,19 @@ Days Nov 23 to Nov 25 (the 0056 read stopped at Nov 22): ladder, marketbase and 
 ## 3. Transfer of T1 to SOL and XRP 15-minute (job dtsx; added 8:20 PM EST / 01:20 UTC, before the candles are fetched)
 
 Round 5c read T1 on the BTC/ETH sister families (oil, FX, alt coins, ...) but never on SOL and XRP: those two had only the 10 recorded book days, not candle history. Their Kalshi 15-minute candles (since the series began, at most 150 days) are fetched read only and kept on Drive. The same rule, unchanged: YES buy 90 to 97c from minute 6, cancel 14, after a day whose YES share is in the bottom third of that coin pair's own first-half days. The day-type search is run as in round 5c (so the count of typed rules and its placebo are printed), but the verdict is on the fixed rule only: it CARRIES if, on SOL and XRP pooled (ALL), the typed days' mean is above zero and at least 0.25c above the other days in both the check and the clean block, with at least 100 fills in each; otherwise it DOES NOT CARRY. A result only changes the scope line of T1 in typed_rules.md.
+
+## 4. Backward read of T1: the recorded days before Apr 13 2026 (job dtback; added 8:50 PM EST / 01:50 UTC Nov 26, after the fresh read came back and before any of these days is fetched)
+
+Why: the fresh read (part 1, run 45734547381) came back CONTRADICTED: the typed days of Nov 5 to Nov 25 lost 0.87c a fill (9 days, 180 fills), and it reproduced +1.72c, +3.19c and +1.31c on the three original blocks, so the plumbing is the same. Nine typed days is a short block, and the ETH half of the rule had been positive in all four blocks (+2.33, +2.78, +2.35, +2.39c) while BTC had not. The only recorded days the rule has never touched are the ones before Apr 13 2026 (the first day the earlier rounds kept). The Kalshi API lists settled BTC and ETH 15-minute markets that far back if the series existed; whether it does is part of what the job finds out.
+
+Data: KXBTC15M and KXETH15M settled markets before Apr 13, listed newest first (so Apr 12 backwards), BTC and ETH fetched at the same time, 40 minutes of fetching in all, read only, kept on Drive at raw/oracle-history/kalshi. Nothing else is searched. Days read: whatever the 40 minutes bring, at most the last 345 days.
+
+Rule, unchanged and not tuned: the same T1 rule (resting YES buy at the best bid, 90 to 97 cents, placed in minutes 6 to 9, cancelled at minute 14, held to settlement, only after a day whose YES share was at or below the build cut 0.4754). The build block stays Apr 13 to Jul 24, so the cut stays the same. The first backward day has no previous day and is dropped.
+
+Verdicts, fixed now:
+- BACK, ALL scope: SUPPORTED, CONTRADICTED or TOO THIN by the part 1 rule (typed mean above zero, at least 100 fills, at least 0.25c above the other backward days; CONTRADICTED if the typed mean is at or below zero or below the other days').
+- ETH alone, BACK: the one subgroup named in advance (it is the half that stayed positive; there is no BTC-alone rescue and no other subgroup). Same rule, at least 100 fills. It is reported and not saved: it was picked after the fresh read, so it can only point to something, never confirm itself.
+- POOLED UNSEEN (the fresh Nov 5 to Nov 25 days plus the backward days), ALL scope: T1 goes back from RETIRED to PRELIMINARY only if the typed mean is above zero with at least 250 fills and at least 0.25c above the other unseen days. Otherwise it stays retired.
+Also printed: the permutation check on the backward block, and the three original blocks again as the plumbing check (they must reproduce +1.72c, +3.19c, +1.31c on ALL).
+
+What each outcome changes: only the status line of T1 in typed_rules.md and a note on ETH. No outcome starts anything beyond paper.

@@ -50,6 +50,21 @@ class FreshTest(unittest.TestCase):
         r = self.read(True)
         self.assertEqual(r['cuts_from_build'], {'wkend': [5]})
 
+    def test_a_backward_block_before_the_build_days_is_read_and_pooled_with_the_fresh_days(self):
+        t = tempfile.mkdtemp()
+        write_weekend(t, days=84, yes_on_weekend=True)
+        w = DT.load(t, 'm15', ['AAA'], log=lambda *x: None)
+        blocks = {'back': (d(0), d(13)), 'build': (d(14), d(41)), 'check': (d(42), d(55)), 'clean': (d(56), d(69)), 'fresh': (d(70), d(83))}
+        r = FR.read(w, blocks, ('yes', '0.5', '1'), 'wkend', 'weekend', perms=300)
+        x = [x for x in r['rows'] if x['scope'] == 'ALL'][0]
+        self.assertEqual(r['blocks']['back'][2], 14)
+        self.assertEqual(r['blocks']['unseen'][2], 28)                     # fresh and back days together
+        self.assertGreater(x['back']['net_c'], 0)
+        self.assertGreater(x['unseen']['net_c'], 0)
+        self.assertIn('back_permutation_p', x)
+        self.assertEqual(FR.verdict(x, min_fills=5, block='back')['verdict'], 'supported')
+        self.assertEqual(FR.verdict(x, min_fills=5, block='unseen')['verdict'], 'supported')
+
 
 if __name__ == '__main__':
     unittest.main()
