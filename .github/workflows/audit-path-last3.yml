@@ -1,0 +1,235 @@
+name: Audit path part 2, the last three minutes
+# Research only (research/audit_path/PREREG-AP.md, part 2): the one-second grids of the recorded days, then one choice of the margin on Nov 11 to 18 and one score
+# on Nov 19 onward. Recorded days only, paper only, no order, no bot change, no server. Aggregates only in the log.
+# Started by a push that changes research/audit_path/RUN-LAST3. The LAST non-empty line of that file is the command:
+#   grids 2026-11-21 2026-11-22 ...   build the missing grids of the listed days from the recordings on Drive (no result or price is read or printed)
+#   choose                           the settlement-rule check and the margin, on the grids of Nov 11 to 18 only; prints the freeze file
+#   score                            reads research/audit_path/FREEZE-LAST3.json from the repository and scores the grids of Nov 19 onward, once
+on:
+  push:
+    branches: [claude/project-thread-y1uc2x]
+    paths: ['research/audit_path/RUN-LAST3']
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      cmd: ${{ steps.read.outputs.cmd }}
+      days: ${{ steps.read.outputs.days }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read the command (the last non-empty line of RUN-LAST3)
+        id: read
+        run: |
+          set -euo pipefail
+          line=$(grep -v '^[[:space:]]*$' research/audit_path/RUN-LAST3 | tail -1 | tr -s '[:space:]' ' ' | sed -E 's/^ +| +$//g')
+          cmd=${line%% *}
+          rest=""
+          [ "$cmd" = "$line" ] || rest=${line#* }
+          case "$cmd" in
+            choose|score)
+              [ -z "$rest" ] || { echo "::error::$cmd takes no arguments"; exit 1; }
+              days='["none"]' ;;   # a placeholder: the grids job never runs for this command
+            grids)
+              [ -n "$rest" ] || { echo "::error::grids needs at least one day"; exit 1; }
+              days=""
+              for d in $rest; do
+                [[ "$d" =~ ^2026-[0-9]{2}-[0-9]{2}$ ]] || { echo "::error::bad day: $d"; exit 1; }
+                days="$days\"$d\","
+              done
+              days="[${days%,}]" ;;
+            *) echo "::error::unknown command: $cmd (expected grids DAY..., choose or score)"; exit 1 ;;
+          esac
+          echo "cmd=$cmd" >> "$GITHUB_OUTPUT"
+          echo "days=$days" >> "$GITHUB_OUTPUT"
+          echo "command: $cmd $days"
+
+  # The one-second grids of later recorded days, built exactly as the dsmdgrid stage of heat-direction.yml builds them (same commands, same dependencies).
+  # Nothing here computes or prints a result or a price: only the day, the window count per coin and the file's hash.
+  grids:
+    needs: plan
+    if: needs.plan.outputs.cmd == 'grids'
+    concurrency:
+      group: audit-path-last3-grid-${{ matrix.day }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        day: ${{ fromJSON(needs.plan.outputs.days) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5 orjson
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Is the grid already on Drive?
+        id: have
+        run: |
+          set -euo pipefail
+          G=gdrive:kalshi-bot-archive/models/subminute/grids
+          if [ -n "$(rclone lsf "$G" --files-only --include "grid-${{ matrix.day }}.npz" 2>/dev/null || true)" ]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+            echo 'AUDITPATH last3 {"part":"grid","day":"${{ matrix.day }}","status":"already on Drive, not rebuilt"}'
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Which form of the day Drive holds
+        if: steps.have.outputs.built == 'false'
+        id: probe
+        run: |
+          set -euo pipefail
+          R=gdrive:kalshi-bot-archive/recordings
+          if [ -n "$(rclone lsf "$R" --files-only --include "md-${{ matrix.day }}.jsonl.gz")" ]; then echo "form=gz" >> "$GITHUB_OUTPUT"
+          elif [ -n "$(rclone lsf "$R" --files-only --include "md-${{ matrix.day }}.mdc")" ]; then echo "form=mdc" >> "$GITHUB_OUTPUT"
+          else
+            echo "form=none" >> "$GITHUB_OUTPUT"
+            echo 'AUDITPATH last3 {"part":"grid","day":"${{ matrix.day }}","status":"no recording on Drive, day left out"}'
+          fi
+      - uses: actions/setup-node@v5
+        if: steps.have.outputs.built == 'false' && steps.probe.outputs.form == 'mdc'
+        with:
+          node-version: '22'
+      - name: Restore dependencies (the compact form is decoded by scripts/mdc.ts)
+        if: steps.have.outputs.built == 'false' && steps.probe.outputs.form == 'mdc'
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.have.outputs.built == 'false' && steps.probe.outputs.form == 'mdc' && steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Pull the recorded day
+        if: steps.have.outputs.built == 'false' && steps.probe.outputs.form != 'none'
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh recording "${{ matrix.day }}" data/rec
+          ls -l data/rec | tail -2
+      - name: Reduce it to 1-second grids (the builder's own summary line is not printed)
+        if: steps.have.outputs.built == 'false' && steps.probe.outputs.form != 'none'
+        working-directory: python
+        run: |
+          set -o pipefail
+          mkdir -p ../out/grid; date -u +%T
+          python3 -W ignore -m subminute.grid "../data/rec/md-${{ matrix.day }}.jsonl.gz" "${{ matrix.day }}" "../out/grid/grid-${{ matrix.day }}.npz" 2>&1 >/dev/null | tail -3 | cut -c1-500
+          date -u +%T; ls -l ../out/grid
+      - name: Keep the grid on Drive, and print its day, window counts and hash
+        if: steps.have.outputs.built == 'false' && steps.probe.outputs.form != 'none'
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh put "models/subminute/grids" out/grid
+          python3 -I - "out/grid/grid-${{ matrix.day }}.npz" "${{ matrix.day }}" <<'PY'
+          import hashlib, json, sys
+          import numpy as np
+          path, day = sys.argv[1], sys.argv[2]
+          z = np.load(path)
+          h = hashlib.sha256(open(path, 'rb').read()).hexdigest()
+          win = {c: int(len(z[c + '__open_ms'])) for c in ('BTC', 'ETH', 'SOL', 'XRP') if c + '__open_ms' in z.files}
+          print('AUDITPATH last3 ' + json.dumps({'part': 'grid', 'day': day, 'status': 'built', 'windows': win, 'sha256': h}, sort_keys=True))
+          PY
+
+  # Step 1 of the pre-registration: the settlement-rule check and the margin, on Nov 11 to 18 only (no later grid is even downloaded).
+  choose:
+    needs: plan
+    if: needs.plan.outputs.cmd == 'choose'
+    concurrency:
+      group: audit-path-last3-choose
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: The reader's own tests
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -m unittest auditpath.tests.test_last3 2>&1 | tail -4
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The grids of Nov 11 to 18 (and no other day)
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/subminute/grids" data/grids --include "/grid-2026-11-1[1-8].npz" \
+            || { echo "::error::no grids on Drive (run the grids command first)"; exit 1; }
+          ls data/grids | sed -E 's/^grid-//; s/\.npz$//' | paste -sd' '
+      - name: Settlement-rule check and the margin
+        working-directory: python
+        run: |
+          set -o pipefail
+          mkdir -p ../out/last3
+          python3 -W ignore -m auditpath.last3 choose --grids ../data/grids --from 2026-11-11 --to 2026-11-18 --out ../out/last3/freeze.json 2>&1 | cut -c1-3000
+      - name: The freeze file (aggregates only; the director commits it as research/audit_path/FREEZE-LAST3.json)
+        run: cut -c1-4000 out/last3/freeze.json
+      - name: Keep the freeze file on Drive
+        run: bash deploy/drive_lab.sh put "models/subminute/last3" out/last3
+
+  # Step 2: one score on the scoring days, with the margin of the committed freeze file and nothing else.
+  score:
+    needs: plan
+    if: needs.plan.outputs.cmd == 'score'
+    concurrency:
+      group: audit-path-last3-score
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - name: The freeze file must be in the repository
+        run: |
+          set -euo pipefail
+          [ -s research/audit_path/FREEZE-LAST3.json ] || { echo "::error::research/audit_path/FREEZE-LAST3.json is absent: run choose and commit its freeze file first"; exit 1; }
+          python3 -c "import json; d = json.load(open('research/audit_path/FREEZE-LAST3.json')); print('freeze margin (cents):', d['margin_cents'], 'last choosing day:', d['last_day'])"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: The reader's own tests
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -m unittest auditpath.tests.test_last3 2>&1 | tail -4
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The grids of Nov 19 onward
+        run: |
+          set -euo pipefail
+          inc=()
+          for f in $(rclone lsf gdrive:kalshi-bot-archive/models/subminute/grids --files-only); do
+            if [[ "$f" =~ ^grid-(2026-[0-9]{2}-[0-9]{2})\.npz$ ]] && [[ "${BASH_REMATCH[1]}" > "2026-11-18" ]]; then inc+=(--include "/$f"); fi
+          done
+          [ "${#inc[@]}" -gt 0 ] || { echo "::error::no grid of Nov 19 or later on Drive"; exit 1; }
+          bash deploy/drive_lab.sh get "models/subminute/grids" data/grids "${inc[@]}"
+          ls data/grids | sed -E 's/^grid-//; s/\.npz$//' | paste -sd' '
+      - name: Score
+        working-directory: python
+        run: |
+          set -o pipefail
+          mkdir -p ../out/last3
+          python3 -W ignore -m auditpath.last3 score --grids ../data/grids --freeze ../research/audit_path/FREEZE-LAST3.json --from 2026-11-19 --out ../out/last3/result.json 2>&1 | cut -c1-6000
+      - name: Keep the result file on Drive (aggregates only)
+        run: bash deploy/drive_lab.sh put "models/subminute/last3" out/last3

@@ -253,3 +253,22 @@ entry price band; the same with the book taken at s (no delay) and three seconds
 
 Run: `python3 -m auditpath.last3` in `python/`, workflow `.github/workflows/audit-path-last3.yml`, started by a push
 that changes `research/audit_path/RUN-LAST3`. Aggregates only.
+
+### Part 2, amendment 1 (written Nov 25 9:56 PM EST / Nov 26 02:56 UTC, BEFORE the first read: how the code reads the rules above)
+
+Two independent critics checked the code against this part (the odds matched a brute-force calculation); where the
+text left room, the reading taken is:
+- Sigma is the sample standard deviation of the valid one-second index changes in the 600 seconds ending at s. The
+  known seconds and the latest index use the last value carried forward within the day.
+- "Unchanged for 120 s" means an age of 120 seconds or more at the book that is traded (one second after s).
+- A locked book (bid equal to ask) is allowed; crossed means bid above ask.
+- Net cents per contract is contract-weighted (net dollars / contracts). The bootstrap draws all time slots of the
+  scored days, including slots with no fill.
+- A window whose 15 minutes cross midnight UTC is skipped (its index is in the next day's file); the count is printed.
+- The favourite twin takes the dearer side, YES on an exact tie. A twin side with no size shown is dropped.
+- Dollars an hour = net dollars / (scored grid days x 24). The $10 figure re-runs the rule with a $10 order.
+- A split cell with under 5 fills prints its count only.
+- The command "choose" refuses any day outside Nov 11 to 18; "score" refuses any day at or before Nov 18 and reads the
+  margin only from the committed file research/audit_path/FREEZE-LAST3.json.
+- Order of the jobs: "choose" runs on the grids that exist. The grids of Nov 21 to 25 are built by a job that prints no
+  price and no result. "score" runs once, after those builds end, on Nov 19 through the last day that built.
