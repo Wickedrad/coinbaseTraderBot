@@ -181,6 +181,22 @@ Run: `python3 -m auditpath.onetest` in `python/` (part A: workflow `.github/work
 by a push that changes `research/audit_path/RUN-ONETEST`; part B: `.github/workflows/audit-path-replay.yml`, started by
 `research/audit_path/RUN-REPLAY`). Jobs print aggregates only; trip rows, call rows and Binance rows stay on Drive.
 
+### Part 1, amendment 1 (written Nov 25 9:55 PM EST / Nov 26 02:55 UTC, BEFORE the first read: how the code reads the rules above)
+
+Two independent critics checked the code against this part; where the text left room, the reading taken is:
+- Candle prices are rounded to whole cents for the cost, the band, C and the level.
+- "Direction found" also needs G above zero (it matters only if G and its error are both zero).
+- The primary count is the first entry per contract whose called side is scored; contracts with no scored entry are
+  counted and printed.
+- The final word is "mixed" whenever the primary and secondary words differ.
+- The same-side-random-minute control includes the entry's own minute; its value is the mean over the scored minutes.
+- Sold after one minute: a bid of zero is a sale at 0c (the side is worthless there); a missing candle is "no exit" and
+  is left out of that average.
+- Hours for dollars an hour = UTC days with at least one entry x 24.
+- A split cell with under 10 scored entries is counted but not rated.
+- The fill-price variant uses the trip's order time as the fill time (at or before the real fill); information only.
+- The candles of the traded tickers are kept on private Drive between runs, not in an Actions cache.
+
 ## Part 2: the last three minutes of the 15-minute window (written Nov 25 2026, 9:40 PM EST / Nov 26 02:40 UTC, before any read)
 
 Question. The 15-minute contract settles YES when the 60-second average of the index before the close is at or above

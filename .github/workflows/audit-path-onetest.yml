@@ -1,0 +1,78 @@
+name: Audit path part 1, the one test on Kalshi one-minute candles (part A)
+# Research only (research/audit_path/PREREG-AP.md, part 1, part A): the lane's own paper entries since Nov 12, scored on Kalshi's public one-minute
+# candles by the rules written before any read. Recorded days only, no order, no bot change. The trip files come from private Drive and stay on the
+# runner; the log carries aggregates only (lines that start with "AUDITPATH onetest "). Started by a push that changes research/audit_path/RUN-ONETEST.
+on:
+  push:
+    branches: [claude/project-thread-y1uc2x]
+    paths: ['research/audit_path/RUN-ONETEST']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-path-onetest
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  onetest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: The test's own tests
+        working-directory: python
+        run: python3 -m unittest auditpath.tests.test_onetest 2>&1 | tail -4
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The loss review's trip files (private Drive, kept on the runner)
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/onetest-work"
+          rm -rf "$W"; mkdir -p "$W"
+          bash deploy/drive_lab.sh get derived/loss-review "$W" --include 'days/trips-*.jsonl' || { echo "::error::no loss-review folder on Drive (or the pull failed)"; exit 1; }
+          if ! compgen -G "$W/days/trips-*.jsonl" >/dev/null; then echo "::error::the pull brought no trip file"; exit 1; fi
+          echo "trip files pulled: $(ls "$W"/days/trips-*.jsonl | wc -l)"
+      - name: Candles fetched by an earlier run (public Kalshi data, kept on private Drive because the tickers are the lane's own)
+        run: |
+          set -uo pipefail
+          C="$RUNNER_TEMP/onetest-candles"; T="$RUNNER_TEMP/onetest-tar"
+          mkdir -p "$C" "$T"
+          if bash deploy/drive_lab.sh get derived/audit-path/onetest-cache "$T" >/dev/null 2>&1 && [ -f "$T/candles.tgz" ]; then
+            tar -xzf "$T/candles.tgz" -C "$C" && echo "candle files restored: $(ls "$C" | wc -l)"
+          else
+            echo "no earlier candle cache on Drive"
+          fi
+          rm -rf "$T"
+      - name: The one test on the lane's own entries (part A)
+        working-directory: python
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/onetest-candles"
+          python3 -W ignore -m auditpath.onetest trips --work "$RUNNER_TEMP/onetest-work" --cache "$RUNNER_TEMP/onetest-candles" \
+            --from 2026-11-12 --out "$RUNNER_TEMP/onetest-a.json" > "$RUNNER_TEMP/onetest.log" 2>&1 || { echo "::error::the test failed"; grep -E '^ +File "' "$RUNNER_TEMP/onetest.log" | tail -6 | cut -c1-200; grep -oE '^[A-Za-z_.]+(Error|Exception)' "$RUNNER_TEMP/onetest.log" | tail -1; exit 1; }
+          grep '^AUDITPATH ' "$RUNNER_TEMP/onetest.log" | cut -c1-3000
+          grep -v '^AUDITPATH ' "$RUNNER_TEMP/onetest.log" | tail -5 | cut -c1-300
+      - name: Keep the fetched candles on private Drive for a later run
+        if: always()
+        run: |
+          set -uo pipefail
+          C="$RUNNER_TEMP/onetest-candles"; T="$RUNNER_TEMP/onetest-tar"
+          if [ -d "$C" ] && [ -n "$(ls -A "$C" 2>/dev/null)" ]; then
+            mkdir -p "$T" && tar -czf "$T/candles.tgz" -C "$C" . && bash deploy/drive_lab.sh put derived/audit-path/onetest-cache "$T" >/dev/null 2>&1 \
+              && echo "candle files kept: $(ls "$C" | wc -l)" || echo "the candle cache was not kept (the next run fetches again)"
+          fi
+          rm -rf "$T"
+      - name: Remove the trip files from the runner
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/onetest-work" "$RUNNER_TEMP/onetest-a.json" "$RUNNER_TEMP/onetest.log" "$RUNNER_TEMP/onetest-candles"
