@@ -469,5 +469,6 @@ if (process.argv[1] && import.meta.url?.endsWith(path.basename(process.argv[1]))
     series: cliArg('series', 'KXBTC15M,KXETH15M,KXSOL15M,KXXRP15M').split(',').map((s) => s.trim()).filter(Boolean),
     days: Number(cliArg('days', '60')), out: cliArg('out', 'data/history/kalshi'), maxMarkets: Number(cliArg('max-markets', '0')) || undefined,
     budgetMs: Number(cliArg('budget-min', '0')) * 60_000 || undefined,
+    maxCandleMinutes: Number(cliArg('max-candle-min', '0')) || undefined,       // default 2,880; the daily weather markets keep the last 720
   }).catch((e) => { console.error(e); process.exitCode = 1; });
 }
