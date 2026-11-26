@@ -1,0 +1,82 @@
+{
+ "days_missing": [],
+ "days_used": [
+  "2026-11-11",
+  "2026-11-12",
+  "2026-11-13",
+  "2026-11-14",
+  "2026-11-15",
+  "2026-11-16",
+  "2026-11-17",
+  "2026-11-18"
+ ],
+ "grid_sha256": {
+  "grid-2026-11-11.npz": "e9a3cb9da90631261eb75e5a7cf778a5242c8221590233e1bdf8aaa059f9ceb3",
+  "grid-2026-11-12.npz": "2592d7387ee482bba34be8578d388ea48bb7ca1bca805407208a79c0a38a884a",
+  "grid-2026-11-13.npz": "c1cab75b1768e8ac1423f00ed83ad0427e40be1f1c3bd3182a7c559dbe6d9974",
+  "grid-2026-11-14.npz": "4ba0754c778fb8e02b86ac45cbc17465d7efce1a795cac6ab7179a6dcb0f75e4",
+  "grid-2026-11-15.npz": "eff81308e6b030663a91d6296062c5af868de5a90c59303455562979e57cd18a",
+  "grid-2026-11-16.npz": "2873d88ef3f4b1aef3745941a9bbad0e1b5dcf3fbd3288b0a15b0394afad149e",
+  "grid-2026-11-17.npz": "b20a2d26c1f093b3faf423e54ec4df9e479fc2b2672b562b53115e5bea695c3a",
+  "grid-2026-11-18.npz": "4b6341122583ad73e8ec69f200d0fc26742e4a91eaea783821a95113c75943fb"
+ },
+ "last_day": "2026-11-18",
+ "margin_cents": 2,
+ "rule": "most net dollars among margins with at least 100 fills, else the most fills",
+ "settlement_rule": {
+  "matches": 2941,
+  "share": 0.9949255751014885,
+  "windows": 2956
+ },
+ "table": [
+  {
+   "contracts": 470565,
+   "fills": 2936,
+   "margin_cents": 0,
+   "net_cents_per_contract": 0.5724,
+   "net_dollars": 2693.31
+  },
+  {
+   "contracts": 347551,
+   "fills": 2121,
+   "margin_cents": 1,
+   "net_cents_per_contract": 0.9776,
+   "net_dollars": 3397.49
+  },
+  {
+   "contracts": 218559,
+   "fills": 1854,
+   "margin_cents": 2,
+   "net_cents_per_contract": 1.8883,
+   "net_dollars": 4127.09
+  },
+  {
+   "contracts": 177665,
+   "fills": 1705,
+   "margin_cents": 3,
+   "net_cents_per_contract": 2.2901,
+   "net_dollars": 4068.68
+  },
+  {
+   "contracts": 137805,
+   "fills": 1462,
+   "margin_cents": 5,
+   "net_cents_per_contract": 2.0166,
+   "net_dollars": 2779.01
+  },
+  {
+   "contracts": 91782,
+   "fills": 1197,
+   "margin_cents": 8,
+   "net_cents_per_contract": -2.7665,
+   "net_dollars": -2539.16
+  },
+  {
+   "contracts": 66325,
+   "fills": 888,
+   "margin_cents": 12,
+   "net_cents_per_contract": 0.8119,
+   "net_dollars": 538.48
+  }
+ ]
+}
