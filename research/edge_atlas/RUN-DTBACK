@@ -1,2 +1,4 @@
 # Round EA-6 part 4: backward read of T1 on the recorded days before Apr 13 2026 (see PREREG-EA6.md); a change to this file starts .github/workflows/dtback.yml
-run=1
+# fetch_min: minutes of fetching (0 = read the days already kept on Drive)
+fetch_min=0
+run=2

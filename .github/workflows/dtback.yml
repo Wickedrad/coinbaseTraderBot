@@ -55,7 +55,7 @@ jobs:
             bash deploy/drive_lab.sh get "raw/kalshi-history/kalshi/$S" "$D" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
               --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-1[01]-[0-3][0-9].$x" \
               || { echo "::error::raw/kalshi-history/kalshi/$S not readable on Drive"; exit 1; }
-            bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$S" "$D" --include "/2026-1[01]-[0-3][0-9].$x" || echo "no later days kept for $S yet"
+            bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$S" "$D" --include "/2026-1[01]-[0-3][0-9].$x" --include "/2025-*.$x" --include "/2026-0[1-3]-*.$x" --include "/2026-04-0[1-9].$x" --include "/2026-04-1[0-2].$x" || echo "no other days kept for $S yet"
             shopt -s nullglob
             for f in "$D"/*.jsonl.mdc; do [ ! -f "${f%.mdc}" ] || rm "$f"; done
             m=("$D"/*.jsonl.mdc)
@@ -67,10 +67,13 @@ jobs:
       - name: Candles of the settled markets before 2026-04-13 (public API, read only; markets already stored are skipped; newest first; BTC and ETH at the same time, 40 minutes at most)
         run: |
           set -uo pipefail
+          fm=$(sed -nE 's/^fetch_min=([0-9]+)[[:space:]]*$/\1/p' research/edge_atlas/RUN-DTBACK | tail -1); fm=${fm:-40}
+          if [ "$fm" -eq 0 ]; then echo "fetch skipped (fetch_min=0 in RUN-DTBACK): the earlier days are read from Drive"; else
           for S in KXBTC15M KXETH15M; do
-            ( timeout 50m node --import tsx research/history/kalshiHistory.ts --series "$S" --days 345 --max-markets 6000 --out data/k15/kalshi --budget-min 40 2>&1 | tail -4 | cut -c1-300 | sed "s/^/$S: /" ) &
+            ( timeout $((fm + 10))m node --import tsx research/history/kalshiHistory.ts --series "$S" --days 345 --max-markets 6000 --out data/k15/kalshi --budget-min "$fm" 2>&1 | tail -4 | cut -c1-300 | sed "s/^/$S: /" ) &
           done
           wait
+          fi
           # the first day of the old window may have been cut part way: put it back as the earlier rounds read it, so the build block reproduces
           for S in KXBTC15M KXETH15M; do [ -f "/tmp/$S-2026-04-13.jsonl" ] && cp "/tmp/$S-2026-04-13.jsonl" "data/k15/kalshi/$S/2026-04-13.jsonl"; done
           rm -f data/k15/kalshi/KX*15M/2026-11-26.jsonl data/k15/kalshi/KX*15M/2026-11-27.jsonl
@@ -83,11 +86,29 @@ jobs:
         working-directory: python
         run: |
           set -o pipefail
-          # first backward day: the later of the two coins' earliest files, plus one day (the earliest file can be cut part way by the time budget)
-          fb=$(ls ../data/k15/kalshi/KXBTC15M | grep '^20.*jsonl$' | head -1 | cut -c1-10); fe=$(ls ../data/k15/kalshi/KXETH15M | grep '^20.*jsonl$' | head -1 | cut -c1-10)
-          first=$([[ "$fb" > "$fe" ]] && echo "$fb" || echo "$fe"); first=$(date -u -d "$first + 1 day" +%F)
+          # first backward day: the days before 2026-04-13 that came back as whole days for both coins (at least 85 markets a day; a day only the
+          # never-traded markets reached is not one), starting two days after the last short day so that every label rests on a whole previous day
+          first=$(python3 - <<'PY'
+          import datetime, os
+          c = {}
+          for s in ('KXBTC15M', 'KXETH15M'):
+              d = f'../data/k15/kalshi/{s}'
+              for f in os.listdir(d):
+                  if f.endswith('.jsonl') and f[:2] == '20' and f < '2026-04-13':
+                      c.setdefault(f[:10], {})[s] = sum(1 for _ in open(os.path.join(d, f)))
+          lo, hi = datetime.date.fromisoformat(min(c)), datetime.date(2026, 4, 12)
+          short = [lo]
+          day = lo
+          while day <= hi:
+              v = c.get(str(day), {})
+              if len(v) < 2 or min(v.values()) < 85:
+                  short.append(day)
+              day += datetime.timedelta(days=1)
+          print(max(short) + datetime.timedelta(days=2))
+          PY
+          )
           echo "backward block: $first to 2026-04-12"
-          if [[ "$first" > "2026-04-12" ]]; then echo "::error::no days before 2026-04-13 came back"; exit 1; fi
+          if [[ "$first" > "2026-03-24" ]]; then echo "::error::fewer than 20 whole days before 2026-04-13 came back"; exit 1; fi
           python3 -W ignore -m subminute.fresh --hist ../data/k15 --assets BTC,ETH --kind m15 --out ../out/back-k15 --back "$first:2026-04-12" 2>&1 | tail -8 | cut -c1-9000
       - name: Keep the table on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/fresh/k15back" out/back-k15
