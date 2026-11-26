@@ -1,0 +1,36 @@
+name: Audit path part 3, Kalshi reward programs
+# Research only (research/audit_path/PREREG-AP.md, part 3): one read of Kalshi's public incentive list and schedules, no account, no key, no order,
+# no bot change. Prints aggregates and the public crypto rows. Started by a push that changes research/audit_path/RUN-REWARDS.
+on:
+  push:
+    branches: [claude/project-thread-y1uc2x]
+    paths: ['research/audit_path/RUN-REWARDS']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-path-rewards
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  rewards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: The reader's own tests
+        working-directory: python
+        run: python3 -m unittest auditpath.tests.test_rewards 2>&1 | tail -4
+      - name: Kalshi's live reward programs and schedules (public API, read only)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m auditpath.rewards --out ../rewards.json 2>&1 | cut -c1-900
