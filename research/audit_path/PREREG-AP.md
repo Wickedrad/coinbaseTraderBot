@@ -212,6 +212,23 @@ Two independent critics checked the replay against part B; where the text left r
   rows before it opens any Kalshi file.
 - Read-log line 11 was added to `/mnt/project-files/registry/edge-pipeline/calendar.md` before the push.
 
+### Part 1, amendment 3 (written Nov 25 10:15 PM EST / Nov 26 03:15 UTC, BEFORE part B's join is run: how the join reads the rules above)
+
+Two independent critics and a re-check went over the join (`python/auditpath/joincalls.py`); where the text left room,
+the reading taken is:
+- Hours for dollars an hour = UTC days with at least one analysed entry x 24 (as part A); the calendar days and the days
+  with an entry are both printed.
+- "The hourly history does not hold the strikes near the money" is decided by one number fixed here, before the read:
+  the hourly half is available when at least half of the 60-minute calls have a two-sided strike whose YES mid at T0 is
+  10c to 90c. The counts are printed either way. When it is not available, the hourly entries leave the printed analysis;
+  their own analysis is stored on private Drive and is not read unless Steven asks for it (that would be a second read).
+- The day files are named by the close day, so the Nov 5 files are pulled too: the calls of Nov 4 after 23:45 enter
+  contracts that close on Nov 5. For the 15-minute folders, raw/oracle-history may supply only the Nov 5 file, and
+  only where raw/kalshi-history lacks it; the number of files from each source is printed.
+- Strike choice uses whole-cent mids (as amendment 1); a tie goes to the lower strike.
+- Every shard row with a skip flag is dropped before the hash; the one hash over all kept rows is printed before any
+  Kalshi file is opened.
+
 ## Part 2: the last three minutes of the 15-minute window (written Nov 25 2026, 9:40 PM EST / Nov 26 02:40 UTC, before any read)
 
 Question. The 15-minute contract settles YES when the 60-second average of the index before the close is at or above

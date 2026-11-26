@@ -1,0 +1,106 @@
+name: Audit path part B, the replayed calls joined to Kalshi history
+# Research only (research/audit_path/PREREG-AP.md, part 1, part B and amendment 2): the calls table written by audit-path-replay (private Drive,
+# derived/audit-path/calls) is joined to Kalshi's one-minute history on Drive (15-minute contracts: raw/kalshi-history/kalshi/KX{BTC,ETH}15M; hourly
+# ladders: raw/oracle-history/kalshi/KX{BTC,ETH}D) and scored by the one test (python/auditpath/onetest.py, unchanged). Recorded days only, paper only,
+# no order, no bot change. The calls hash is printed before any history file is opened. The log carries aggregates only (lines that start with
+# "AUDITPATH join "); no ticker, no call row, no single timestamp. Started by a push that changes research/audit_path/RUN-JOIN.
+# Days pulled: 2026-08-01 to 2026-11-04 and the day file of 2026-11-05, because a contract that closes just after midnight sits in the file of its close day
+# (without it the calls of the last minutes of Nov 4 would show "no contract"); the join prints how many days are missing.
+on:
+  push:
+    branches: [claude/project-thread-y1uc2x]
+    paths: ['research/audit_path/RUN-JOIN']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-path-join
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  join:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib; the key train.yml, history-build and perp-ta share)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib; only the compact-file decoder is needed from them)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: The tests of the one test and of the join
+        working-directory: python
+        run: python3 -m unittest auditpath.tests.test_onetest auditpath.tests.test_joincalls 2>&1 | tail -4
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The calls shards (private Drive, kept on the runner)
+        run: |
+          set -euo pipefail
+          C="$RUNNER_TEMP/join-calls"
+          rm -rf "$C"; mkdir -p "$C"
+          bash deploy/drive_lab.sh get derived/audit-path/calls "$C" --include 'calls-*.jsonl.gz' || { echo "::error::no calls folder on Drive (or the pull failed)"; exit 1; }
+          if ! compgen -G "$C/calls-*.jsonl.gz" >/dev/null; then echo "::error::the pull brought no calls shard"; exit 1; fi
+          echo "calls shards pulled: $(ls "$C"/calls-*.jsonl.gz | wc -l)"
+      - name: The Kalshi history day files, 2026-08-01 to 2026-11-05 only, compact days decoded (four folders, nothing else is downloaded)
+        run: |
+          set -euo pipefail
+          x='{jsonl,jsonl.mdc}'
+          pull() { # <drive folder> <local dir> <fatal 1|0>
+            bash deploy/drive_lab.sh get "$1" "$2" --include "/2026-08-*.$x" --include "/2026-09-*.$x" --include "/2026-10-*.$x" --include "/2026-11-0[1-5].$x" > /dev/null \
+              || { [ "$3" = 0 ] && return 0; echo "::error::$1 not readable on Drive"; exit 1; }
+          }
+          for A in BTC ETH; do
+            S="KX${A}15M"; D="$RUNNER_TEMP/join-m15/$S"; mkdir -p "$D"
+            pull "raw/kalshi-history/kalshi/$S" "$D" 1
+            n1=$(find "$D" -maxdepth 1 -name '2026-*' | wc -l)
+            # Only the one day that the Nov 4 calls need beyond the range, and never over a day already pulled from raw/kalshi-history.
+            bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$S" "$D" --include "/2026-11-05.$x" --ignore-existing > /dev/null 2>&1 || true
+            n2=$(find "$D" -maxdepth 1 -name '2026-*' | wc -l)
+            echo "$S: $n1 day files from raw/kalshi-history, $((n2 - n1)) more from raw/oracle-history (2026-11-05 only)"
+            S="KX${A}D"; D="$RUNNER_TEMP/join-hourly/$S"; mkdir -p "$D"
+            pull "raw/oracle-history/kalshi/$S" "$D" 1
+          done
+          shopt -s nullglob
+          for D in "$RUNNER_TEMP"/join-m15/KX* "$RUNNER_TEMP"/join-hourly/KX*; do
+            for f in "$D"/*.jsonl.mdc; do [ ! -f "${f%.mdc}" ] || rm "$f"; done
+            m=("$D"/*.jsonl.mdc)
+            if [ "${#m[@]}" -gt 0 ]; then echo "$(basename "$D"): ${#m[@]} day(s) only in compact form: decoded"; npx tsx scripts/mdc.ts expand "$D" > /dev/null; rm -f "${m[@]}"; fi
+            days=("$D"/*.jsonl); echo "$(basename "$D"): ${#days[@]} day files"
+          done
+          shopt -u nullglob
+      - name: The join and the one test on the replayed calls (part B)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m auditpath.joincalls --calls "$RUNNER_TEMP/join-calls" --m15 "$RUNNER_TEMP/join-m15" --hourly "$RUNNER_TEMP/join-hourly" \
+            --from 2026-08-01 --to 2026-11-04 --out "$RUNNER_TEMP/join-b.json" > "$RUNNER_TEMP/join.log" 2>&1 || { echo "::error::the join failed"; grep -E '^ +File "' "$RUNNER_TEMP/join.log" | tail -6 | cut -c1-200; grep -oE '^[A-Za-z_.]+(Error|Exception)' "$RUNNER_TEMP/join.log" | tail -1; grep -E '^auditpath\.joincalls\.JoinError: ' "$RUNNER_TEMP/join.log" | tail -1 | cut -c1-300; exit 1; }
+          grep '^AUDITPATH ' "$RUNNER_TEMP/join.log" | cut -c1-3000
+          grep -v '^AUDITPATH ' "$RUNNER_TEMP/join.log" | tail -3 | cut -c1-200
+      - name: Keep the aggregate JSON on private Drive
+        run: |
+          set -uo pipefail
+          O="$RUNNER_TEMP/join-out"; mkdir -p "$O"
+          if [ -f "$RUNNER_TEMP/join-b.json" ]; then cp "$RUNNER_TEMP/join-b.json" "$O/join-b.json" && bash deploy/drive_lab.sh put derived/audit-path/join "$O" > /dev/null 2>&1 && echo "aggregate JSON kept on Drive" || echo "the aggregate JSON was not kept"; fi
+      - name: Remove the calls and the history from the runner
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/join-calls" "$RUNNER_TEMP/join-m15" "$RUNNER_TEMP/join-hourly" "$RUNNER_TEMP/join-b.json" "$RUNNER_TEMP/join.log" "$RUNNER_TEMP/join-out"
