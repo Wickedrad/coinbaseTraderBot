@@ -1,6 +1,6 @@
 # Round EA-6: fresh days for the saved typed rule, SOL and XRP, days before April, and the hourly lean (recorded days only)
 
-Written Wed Nov 25 2026 between about 8:45 PM EST (01:45 UTC) and 9:50 PM EST (02:50 UTC), as the runs landed. Follows round 5c (ROUND-EA5c.md). Same rules: recorded days only, paper only, no order, no bot change, day-cluster intervals, nothing waits for a future day. Pre-registered in PREREG-EA6.md before each read. Steven's word that started it: "Resume and Continue until 10:30 PM" (8:11 PM EST / 01:11 UTC).
+Written Wed Nov 25 2026 between about 8:45 PM EST (01:45 UTC) and 9:48 PM EST (02:48 UTC), as the runs landed. Follows round 5c (ROUND-EA5c.md). Same rules: recorded days only, paper only, no order, no bot change, day-cluster intervals, nothing waits for a future day. Pre-registered in PREREG-EA6.md before each read. Steven's word that started it: "Resume and Continue until 10:30 PM" (8:11 PM EST / 01:11 UTC).
 
 ## Result
 
