@@ -1,2 +1,2 @@
-stage=dtfresh
-# round 6: the saved typed rule T1 read, fixed in advance, on the BTC and ETH 15-minute days 2026-11-05 to 2026-11-25 (PREREG-EA6.md)
+stage=dtsx
+# round 6 part 3: SOL and XRP 15-minute candles, day types, and the saved rule T1 read in every scope (PREREG-EA6.md section 3)
