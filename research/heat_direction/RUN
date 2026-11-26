@@ -1,2 +1,2 @@
-stage=dtread,dtk15
-# round 5c wave 3: the one typed rule (YES 90-97c, from minute 6, after a down day) read on every 15-minute data set, fixed in advance
+stage=dtfresh
+# round 6: the saved typed rule T1 read, fixed in advance, on the BTC and ETH 15-minute days 2026-11-05 to 2026-11-25 (PREREG-EA6.md)

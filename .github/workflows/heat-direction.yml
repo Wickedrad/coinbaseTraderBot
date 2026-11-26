@@ -1188,6 +1188,74 @@ jobs:
           bash deploy/drive_lab.sh put "models/subminute/famdaily/${{ matrix.group }}" out/fam-${{ matrix.group }}
           bash deploy/drive_lab.sh put "models/subminute/daytypes/${{ matrix.group }}" out/dt-${{ matrix.group }}
 
+  # Round EA-6 (recorded days only): the saved typed rule T1 (research/edge_atlas/typed_rules.md) read, fixed in advance, on the BTC and ETH 15-minute days after the ones it was found
+  # on (2026-11-05 to 2026-11-25, recorded since and never read). The candles of 2026-04-13 to 2026-11-04 come from Drive as in dskalshi; the later days are fetched from Kalshi's
+  # public API (read only) and kept on Drive. The same run re-reads the three original blocks, so a plumbing difference would show as a table that does not reproduce.
+  dtfresh:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dtfresh')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib; the key train.yml, history-build and perp-ta share)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The candles already kept (BTC and ETH 15-minute, 2026-04-13 to 2026-11-04 from raw/kalshi-history, any later day Drive holds), compact days decoded
+        run: |
+          set -euo pipefail
+          for A in BTC ETH; do
+            S="KX${A}15M"; D="data/k15/kalshi/$S"; mkdir -p "$D"
+            x='{jsonl,jsonl.mdc}'
+            bash deploy/drive_lab.sh get "raw/kalshi-history/kalshi/$S" "$D" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
+              --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-1[01]-[0-3][0-9].$x" \
+              || { echo "::error::raw/kalshi-history/kalshi/$S not readable on Drive"; exit 1; }
+            bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$S" "$D" --include "/2026-1[01]-[0-3][0-9].$x" || echo "no later days kept for $S yet"
+            shopt -s nullglob
+            for f in "$D"/*.jsonl.mdc; do [ ! -f "${f%.mdc}" ] || rm "$f"; done
+            m=("$D"/*.jsonl.mdc)
+            if [ "${#m[@]}" -gt 0 ]; then echo "$A: ${#m[@]} day(s) only in compact form: decoded"; npx tsx scripts/mdc.ts expand "$D" > /dev/null; rm -f "${m[@]}"; fi
+            shopt -u nullglob
+            days=("$D"/*.jsonl); echo "$S: ${#days[@]} day files, $(basename "${days[0]}") .. $(basename "${days[$((${#days[@]} - 1))]}")"
+          done
+      - name: Candles of the settled markets after the last kept day (public API, read only; markets already stored are skipped)
+        run: |
+          set -uo pipefail
+          timeout 70m node --import tsx research/history/kalshiHistory.ts --series KXBTC15M,KXETH15M --days 32 --out data/k15/kalshi --budget-min 60 2>&1 | tail -6 | cut -c1-300
+          rm -f data/k15/kalshi/KX*15M/2026-11-26.jsonl data/k15/kalshi/KX*15M/2026-11-27.jsonl
+          for S in KXBTC15M KXETH15M; do days=(data/k15/kalshi/$S/*.jsonl); echo "$S: ${#days[@]} day files, $(basename "${days[0]}") .. $(basename "${days[$((${#days[@]} - 1))]}")"; done
+          for S in KXBTC15M KXETH15M; do n=$(ls data/k15/kalshi/$S/2026-11-0[5-9].jsonl data/k15/kalshi/$S/2026-11-[12][0-9].jsonl 2>/dev/null | wc -l); echo "$S fresh day files 2026-11-05..25: $n"; [ "$n" -ge 15 ] || { echo "::error::$S has only $n of 21 fresh days"; exit 1; }; done
+      - name: Keep the fresh days on Drive (raw/oracle-history/kalshi)
+        run: |
+          set -uo pipefail
+          for S in KXBTC15M KXETH15M; do rm -rf "fresh-keep/$S"; mkdir -p "fresh-keep/$S"; cp data/k15/kalshi/$S/2026-11-0[5-9].jsonl data/k15/kalshi/$S/2026-11-[12][0-9].jsonl "fresh-keep/$S/" 2>/dev/null || true; bash deploy/drive_lab.sh put "raw/oracle-history/kalshi/$S" "fresh-keep/$S" || echo "could not keep $S"; done
+      - name: The saved rule T1 read on the fresh days (YES 90-97c from minute 6 after a low-YES-share day; build, check and clean re-read as a plumbing check)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.fresh --hist ../data/k15 --assets BTC,ETH --kind m15 --out ../out/fresh-k15 2>&1 | tail -8 | cut -c1-6000
+      - name: Keep the table on Drive
+        run: bash deploy/drive_lab.sh put "models/subminute/fresh/k15" out/fresh-k15
+
   # Day types on the candles already kept on Drive (no fetch): the hourly ladders (206 days) and the 15-minute families of round 5b.
   dtread:
     needs: test
